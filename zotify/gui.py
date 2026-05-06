@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -47,6 +48,7 @@ class ZotifyGUI(ctk.CTk):
         self._build_header()
         self._build_main_layout()
         self.after(100, self._drain_output_queue)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, corner_radius=0, fg_color="#111319")
@@ -428,7 +430,7 @@ class ZotifyGUI(ctk.CTk):
             entry.insert(0, selected)
 
     def _build_base_cli_args(self) -> list[str]:
-        args = [sys.executable, "-m", "zotify"]
+        args = [sys.executable, "-u", "-m", "zotify"]
         config_path = self.config_entry.get().strip()
         username = self.username_entry.get().strip()
         token = self.token_entry.get().strip()
@@ -439,6 +441,10 @@ class ZotifyGUI(ctk.CTk):
             args.append("--debug")
         if self.no_splash_var.get():
             args.append("--no-splash")
+        # Use standard interface to avoid ANSI loader animations
+        # that corrupt subprocess stdout in the GUI console.
+        args.append("--standard-interface")
+        args.append("True")
         if config_path:
             args.extend(["--config-location", config_path])
         if download_dir:
@@ -455,17 +461,52 @@ class ZotifyGUI(ctk.CTk):
         return args
 
     def _resolve_credentials_path(self) -> Path:
-        config_path = self.config_entry.get().strip()
-        if config_path:
-            cfg_path = Path(config_path).expanduser()
-            base_dir = cfg_path.parent if cfg_path.suffix else cfg_path
-            return base_dir / "credentials.json"
-        if sys.platform == "win32":
-            appdata = Path(os.getenv("APPDATA", Path.home() / "AppData" / "Roaming"))
-            return appdata / "Zotify" / "credentials.json"
-        if sys.platform == "darwin":
-            return Path.home() / "Library" / "Application Support" / "Zotify" / "credentials.json"
-        return Path.home() / ".local" / "share" / "zotify" / "credentials.json"
+        """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
+        
+        The CLI determines the credentials path by:
+        1. Reading CREDENTIALS_LOCATION from config.json
+        2. If empty, using the platform default directory
+        3. Appending 'credentials.json' if the path has no suffix
+        
+        The GUI must replicate this so the auth status display is accurate.
+        """
+        # Step 1: Determine config directory (same logic as Config.load)
+        config_input = self.config_entry.get().strip()
+        if config_input:
+            config_dir_or_file = Path(config_input).expanduser()
+        else:
+            system_paths = {
+                "win32": Path.home() / "AppData" / "Roaming" / "Zotify",
+                "linux": Path.home() / ".config" / "zotify",
+                "darwin": Path.home() / "Library" / "Application Support" / "Zotify",
+            }
+            config_dir_or_file = system_paths.get(sys.platform, Path.cwd() / ".zotify")
+        config_json = config_dir_or_file if config_dir_or_file.suffix else config_dir_or_file / "config.json"
+
+        # Step 2: Try to read CREDENTIALS_LOCATION from config.json
+        cred_location = ""
+        if config_json.exists():
+            try:
+                with open(config_json, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if isinstance(cfg, dict):
+                    cred_location = cfg.get("CREDENTIALS_LOCATION", "")
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        # Step 3: Resolve the credentials path (same logic as Config.get_credentials_location)
+        if not cred_location:
+            system_paths = {
+                "win32": Path.home() / "AppData" / "Roaming" / "Zotify",
+                "linux": Path.home() / ".local" / "share" / "zotify",
+                "darwin": Path.home() / "Library" / "Application Support" / "Zotify",
+            }
+            cred_dir_or_file = system_paths.get(sys.platform, Path.cwd() / ".zotify")
+        else:
+            cred_dir_or_file = Path(cred_location).expanduser()
+
+        credentials = cred_dir_or_file if cred_dir_or_file.suffix else cred_dir_or_file / "credentials.json"
+        return credentials
 
     def _refresh_auth_status(self) -> None:
         cred_path = self._resolve_credentials_path()
@@ -603,18 +644,29 @@ class ZotifyGUI(ctk.CTk):
 
     def stop_command(self) -> None:
         if self.current_process is not None and self.current_process.poll() is None:
-            self.current_process.terminate()
-            self._append_console("Arret demande...\n")
+            self.current_process.kill()  # kill() instead of terminate() to ensure child threads die
+            try:
+                self.current_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            self._append_console("Arret force du processus.\n")
 
     def _run_subprocess(self, command: list[str]) -> None:
         try:
-            self.current_process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            # Force unbuffered output so subprocess prints reach the GUI immediately
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+
+            popen_kwargs: dict = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.PIPE,
+                "text": True,
+                "bufsize": 1,
+                "env": env,
+            }
+
+            self.current_process = subprocess.Popen(command, **popen_kwargs)
             assert self.current_process.stdout is not None
             for line in self.current_process.stdout:
                 self.output_queue.put(line)
@@ -649,15 +701,26 @@ class ZotifyGUI(ctk.CTk):
                     if maybe_url and self.pending_oauth_url != maybe_url:
                         self.pending_oauth_url = maybe_url
                         self._open_oauth_url(maybe_url)
-                    if self.login_flow_active and "received callback" in msg.lower():
-                        self.login_success_detected = True
-                        self._append_console("Callback Spotify recu, finalisation de la connexion...\n")
-                    noisy_login_line = self.login_flow_active and (
-                        "logging in..." in msg.lower()
-                        or msg.strip().startswith("[...")
-                        or msg.strip().startswith("[>..]")
-                        or msg.strip().startswith("[.>.]")
-                        or msg.strip().startswith("[..>]")
+                    lowered_msg = msg.lower()
+                    if self.login_flow_active and (
+                        "received callback" in lowered_msg
+                        or "spotify login completed" in lowered_msg
+                        or "login completed" in lowered_msg
+                        or "session initialized successfully" in lowered_msg
+                    ):
+                        if not self.login_success_detected:
+                            self.login_success_detected = True
+                            self._append_console("Connexion Spotify detectee, finalisation...\n")
+                    # Filter out noisy loader animation lines
+                    stripped_msg = msg.strip()
+                    noisy_login_line = (
+                        "logging in..." in lowered_msg
+                        or stripped_msg.startswith("[...")
+                        or stripped_msg.startswith("[>..]")
+                        or stripped_msg.startswith("[.>.]")
+                        or stripped_msg.startswith("[..>]")
+                        or stripped_msg.startswith("[\u2219")
+                        or stripped_msg.startswith("[\u25cf")
                     )
                     if noisy_login_line:
                         continue
@@ -669,6 +732,16 @@ class ZotifyGUI(ctk.CTk):
             pass
         finally:
             self.after(100, self._drain_output_queue)
+
+    def _on_close(self) -> None:
+        """Kill any running subprocess before closing the window."""
+        if self.current_process is not None and self.current_process.poll() is None:
+            self.current_process.kill()
+            try:
+                self.current_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        self.destroy()
 
 
 def launch_gui() -> None:
