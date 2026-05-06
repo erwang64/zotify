@@ -30,6 +30,7 @@ from tkinter import filedialog, Menu
 
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
+GUI_VERSION: Final[str] = "1.0.0"
 
 
 class ZotifyGUI(ctk.CTk):
@@ -41,6 +42,7 @@ class ZotifyGUI(ctk.CTk):
         self.title("Zotify GUI")
         self.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.minsize(900, 620)
+        self._center_window(WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self.settings_path = self._resolve_settings_path()
         self.gui_settings = self._load_gui_settings()
@@ -75,7 +77,7 @@ class ZotifyGUI(ctk.CTk):
         nav.grid_propagate(False)
         nav.grid_columnconfigure(0, weight=1)
 
-        logo_path = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
+        logo_path = self._resolve_resource_path("logo", "logo.png")
         if logo_path.exists():
             pil_img = Image.open(logo_path)
             self.logo_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(160, 52))
@@ -112,6 +114,14 @@ class ZotifyGUI(ctk.CTk):
                                              text_color="#FFFFFF", hover_color="#282828", corner_radius=20, height=32,
                                              font=ctk.CTkFont(weight="bold"))
         self.nav_auth_button.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        version_label = ctk.CTkLabel(
+            nav,
+            text=f"Version {GUI_VERSION}",
+            text_color="#7A7A7A",
+            font=ctk.CTkFont(size=12),
+        )
+        version_label.grid(row=6, column=0, padx=16, pady=(0, 14), sticky="w")
 
         self._sync_nav_style()
 
@@ -207,24 +217,20 @@ class ZotifyGUI(ctk.CTk):
         self.client_id_entry = add_entry("Client ID API Spotify", "Laisser vide pour le client interne")
         self.client_id_entry.insert(0, self.gui_settings.get("api_client_id", ""))
 
-        ctk.CTkLabel(card, text="Authentification manuelle (Alternative à OAuth)", font=ctk.CTkFont(weight="bold", size=14), text_color="#FFFFFF").grid(row=row_idx, column=0, padx=32, pady=(32, 8), sticky="w")
-        row_idx += 1
-        auth_frame = ctk.CTkFrame(card, fg_color="transparent")
-        auth_frame.grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="ew")
-        auth_frame.grid_columnconfigure((0, 1), weight=1)
-        row_idx += 1
-        
-        self.username_entry = ctk.CTkEntry(auth_frame, placeholder_text="Username", fg_color="#282828", border_width=0, height=40)
-        self.username_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.token_entry = ctk.CTkEntry(auth_frame, placeholder_text="Token (login5)", show="*", fg_color="#282828", border_width=0, height=40)
-        self.token_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-
         self.settings_info = ctk.CTkLabel(card, text="", text_color="#B3B3B3")
         self.settings_info.grid(row=row_idx, column=0, padx=32, pady=(24, 8), sticky="w")
         row_idx += 1
         
         save_btn = ctk.CTkButton(card, text="Sauvegarder", command=self.save_settings, fg_color="#FFFFFF", text_color="#000000", hover_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=48, corner_radius=24, width=200)
         save_btn.grid(row=row_idx, column=0, padx=32, pady=(0, 32), sticky="w")
+
+    def _center_window(self, width: int, height: int) -> None:
+        self.update_idletasks()
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_success_page(self, parent: ctk.CTkFrame) -> None:
         self.success_card = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
@@ -513,9 +519,9 @@ class ZotifyGUI(ctk.CTk):
         adv_label = ctk.CTkLabel(right_frame, text="Options avancées", font=ctk.CTkFont(weight="bold"), text_color="#FFFFFF")
         adv_label.grid(row=0, column=0, pady=(0, 12), sticky="w")
 
-        self.persist_var = ctk.BooleanVar(value=False)
-        self.debug_var = ctk.BooleanVar(value=False)
-        self.no_splash_var = ctk.BooleanVar(value=True)
+        self.persist_var = ctk.BooleanVar(value=self._get_gui_bool("persist", False))
+        self.debug_var = ctk.BooleanVar(value=self._get_gui_bool("debug", False))
+        self.no_splash_var = ctk.BooleanVar(value=self._get_gui_bool("no_splash", True))
         
         cb_kwargs = {"border_color": "#535353", "hover_color": "#1ED760", "checkmark_color": "#000000"}
         ctk.CTkCheckBox(right_frame, text="Session persistante (--persist)", variable=self.persist_var, **cb_kwargs).grid(row=1, column=0, pady=4, sticky="w")
@@ -774,10 +780,12 @@ class ZotifyGUI(ctk.CTk):
             entry.insert(0, selected)
 
     def _build_base_cli_args(self) -> list[str]:
-        args = [sys.executable, "-u", "-m", "zotify"]
+        if getattr(sys, "frozen", False):
+            # En mode executable, on relance l'exe lui-meme sans --gui.
+            args = [sys.executable]
+        else:
+            args = [sys.executable, "-u", "-m", "zotify"]
         config_path = self.default_config_entry.get().strip()
-        username = self.username_entry.get().strip()
-        token = self.token_entry.get().strip()
         download_dir = self.download_dir_entry.get().strip()
         podcast_dir = self.podcast_dir_entry.get().strip()
 
@@ -795,14 +803,14 @@ class ZotifyGUI(ctk.CTk):
             args.extend(["--root-path", download_dir])
         if podcast_dir:
             args.extend(["--root-podcast-path", podcast_dir])
-        if username:
-            args.extend(["--username", username])
-        if token:
-            args.extend(["--token", token])
         client_id = self.client_id_entry.get().strip()
         if client_id:
             args.extend(["--client-id", client_id])
         return args
+
+    def _resolve_resource_path(self, *parts: str) -> Path:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        return base.joinpath(*parts)
 
     def _resolve_credentials_path(self) -> Path:
         """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
@@ -876,7 +884,7 @@ class ZotifyGUI(ctk.CTk):
         settings_dir.mkdir(parents=True, exist_ok=True)
         return settings_dir / "gui_settings.json"
 
-    def _load_gui_settings(self) -> dict[str, str]:
+    def _load_gui_settings(self) -> dict[str, str | bool]:
         if not self.settings_path.exists():
             return {}
         try:
@@ -888,12 +896,23 @@ class ZotifyGUI(ctk.CTk):
             pass
         return {}
 
+    def _get_gui_bool(self, key: str, default: bool) -> bool:
+        value = self.gui_settings.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     def save_settings(self) -> None:
         self.gui_settings = {
             "download_dir": self.download_dir_entry.get().strip(),
             "podcast_dir": self.podcast_dir_entry.get().strip(),
             "default_config_path": self.default_config_entry.get().strip(),
             "api_client_id": self.client_id_entry.get().strip(),
+            "persist": self.persist_var.get(),
+            "debug": self.debug_var.get(),
+            "no_splash": self.no_splash_var.get(),
         }
         try:
             with open(self.settings_path, "w", encoding="utf-8") as settings_file:
@@ -902,6 +921,7 @@ class ZotifyGUI(ctk.CTk):
             self._append_console(f"Paramètres sauvegardés : {self.settings_path}\n")
         except OSError as exc:
             self.settings_info.configure(text=f"Erreur sauvegarde : {exc}", text_color="#E22134")
+            self._append_console(f"Erreur sauvegarde paramètres: {exc}\n")
 
     def _update_mode_hint(self) -> None:
         hints = {
