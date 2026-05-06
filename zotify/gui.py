@@ -92,13 +92,16 @@ class ZotifyGUI(ctk.CTk):
         self.home_nav_btn = ctk.CTkButton(nav, text="Accueil", command=lambda: self.show_page("Accueil"), **btn_kwargs)
         self.home_nav_btn.grid(row=1, column=0, padx=12, pady=4, sticky="ew")
 
-        self.settings_nav_btn = ctk.CTkButton(nav, text="Paramètres", command=lambda: self.show_page("Settings"), **btn_kwargs)
-        self.settings_nav_btn.grid(row=2, column=0, padx=12, pady=4, sticky="ew")
+        self.download_nav_btn = ctk.CTkButton(nav, text="Téléchargement", command=lambda: self.show_page("Download"), **btn_kwargs)
+        self.download_nav_btn.grid(row=2, column=0, padx=12, pady=4, sticky="ew")
 
-        nav.grid_rowconfigure(3, weight=1)
+        self.settings_nav_btn = ctk.CTkButton(nav, text="Paramètres", command=lambda: self.show_page("Settings"), **btn_kwargs)
+        self.settings_nav_btn.grid(row=3, column=0, padx=12, pady=4, sticky="ew")
+
+        nav.grid_rowconfigure(4, weight=1)
 
         auth_frame = ctk.CTkFrame(nav, fg_color="#181818", corner_radius=8)
-        auth_frame.grid(row=4, column=0, padx=12, pady=24, sticky="ew")
+        auth_frame.grid(row=5, column=0, padx=12, pady=24, sticky="ew")
         auth_frame.grid_columnconfigure(0, weight=1)
         
         self.nav_auth_status = ctk.CTkLabel(auth_frame, text="Spotify: déconnecté", text_color="#B3B3B3", font=ctk.CTkFont(size=12, weight="bold"))
@@ -120,9 +123,14 @@ class ZotifyGUI(ctk.CTk):
 
         self.home_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.home_page.grid(row=0, column=0, sticky="nsew")
-        self.home_page.grid_columnconfigure(0, weight=0, minsize=420)
-        self.home_page.grid_columnconfigure(1, weight=1)
+        self.home_page.grid_columnconfigure(0, weight=1)
         self.home_page.grid_rowconfigure(0, weight=1)
+
+        self.download_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.download_page.grid(row=0, column=0, sticky="nsew")
+        self.download_page.grid_columnconfigure(0, weight=1)
+        self.download_page.grid_rowconfigure(0, weight=0)
+        self.download_page.grid_rowconfigure(1, weight=1)
 
         self.settings_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.settings_page.grid(row=0, column=0, sticky="nsew")
@@ -134,12 +142,32 @@ class ZotifyGUI(ctk.CTk):
         self.success_page.grid_columnconfigure(0, weight=1)
         self.success_page.grid_rowconfigure(0, weight=1)
         
+        self._build_home_page(self.home_page)
         self._build_settings_page(self.settings_page)
         self._build_success_page(self.success_page)
-        self._build_left_controls(self.home_page)
-        self._build_output_panel(self.home_page)
+        self._build_top_controls(self.download_page)
+        self._build_output_panel(self.download_page)
 
         self.show_page("Accueil")
+
+    def _build_home_page(self, parent: ctk.CTkFrame) -> None:
+        card = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
+        card.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.8, relheight=0.8)
+
+        title = ctk.CTkLabel(card, text="Bienvenue sur Zotify", font=ctk.CTkFont(size=36, weight="bold"), text_color="#1DB954")
+        title.pack(pady=(60, 20))
+
+        info_text = (
+            "Zotify est un outil puissant pour télécharger ta musique depuis Spotify.\n\n"
+            "Commence par lier ton compte dans les Paramètres si ce n'est pas déjà fait,\n"
+            "puis rends-toi dans l'onglet Téléchargement pour entrer tes liens.\n\n"
+            "Bonne écoute !"
+        )
+        desc = ctk.CTkLabel(card, text=info_text, font=ctk.CTkFont(size=16), text_color="#FFFFFF", justify="center")
+        desc.pack(pady=20)
+
+        start_btn = ctk.CTkButton(card, text="Aller au téléchargement", command=lambda: self.show_page("Download"), fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=44, corner_radius=22)
+        start_btn.pack(pady=40)
 
     def _build_settings_page(self, parent: ctk.CTkFrame) -> None:
         card = ctk.CTkScrollableFrame(parent, fg_color="#181818", corner_radius=12)
@@ -238,7 +266,7 @@ class ZotifyGUI(ctk.CTk):
         self.open_folder_btn = ctk.CTkButton(buttons_frame, text="Ouvrir le dossier", command=self._open_download_folder, fg_color="transparent", border_width=1, border_color="#B3B3B3", text_color="#FFFFFF", hover_color="#3E3E3E", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
         self.open_folder_btn.grid(row=0, column=0, padx=10)
 
-        self.new_download_btn = ctk.CTkButton(buttons_frame, text="Nouveau téléchargement", command=lambda: self.show_page("Accueil"), fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
+        self.new_download_btn = ctk.CTkButton(buttons_frame, text="Nouveau téléchargement", command=lambda: self.show_page("Download"), fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
         self.new_download_btn.grid(row=0, column=1, padx=10)
 
     def _open_download_folder(self) -> None:
@@ -410,6 +438,8 @@ class ZotifyGUI(ctk.CTk):
         self.current_page = page
         if page == "Accueil":
             self.home_page.tkraise()
+        elif page == "Download":
+            self.download_page.tkraise()
         elif page == "Success":
             self.success_page.tkraise()
             self._animate_success_page()
@@ -423,76 +453,91 @@ class ZotifyGUI(ctk.CTk):
         default_bg = "transparent"
         default_text = "#B3B3B3"
         
+        self.home_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+        self.download_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+        self.settings_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+
         if self.current_page == "Accueil":
             self.home_nav_btn.configure(fg_color=selected_bg, text_color=selected_text)
-            self.settings_nav_btn.configure(fg_color=default_bg, text_color=default_text)
-        else:
-            self.home_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+        elif self.current_page == "Download":
+            self.download_nav_btn.configure(fg_color=selected_bg, text_color=selected_text)
+        elif self.current_page == "Settings":
             self.settings_nav_btn.configure(fg_color=selected_bg, text_color=selected_text)
 
-    def _build_left_controls(self, parent: ctk.CTkFrame) -> None:
+    def _build_top_controls(self, parent: ctk.CTkFrame) -> None:
         panel = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
-        panel.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+        panel.grid(row=0, column=0, sticky="nsew", pady=(0, 20))
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(0, weight=1)
 
-        content = ctk.CTkScrollableFrame(panel, fg_color="transparent")
-        content.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        content.grid_columnconfigure(0, weight=1)
+        # Split panel into two columns: Left for input, Right for advanced & actions
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        content.grid_columnconfigure(0, weight=2)
+        content.grid_columnconfigure(1, weight=1)
 
-        title = ctk.CTkLabel(content, text="Téléchargement", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFFFFF")
-        title.grid(row=0, column=0, padx=16, pady=(20, 24), sticky="w")
+        # --- Left Column ---
+        left_frame = ctk.CTkFrame(content, fg_color="transparent")
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        left_frame.grid_columnconfigure(0, weight=1)
 
-        mode_label = ctk.CTkLabel(content, text="Mode de recherche", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
-        mode_label.grid(row=1, column=0, padx=16, pady=(0, 8), sticky="w")
+        title = ctk.CTkLabel(left_frame, text="Téléchargement", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFFFFF")
+        title.grid(row=0, column=0, pady=(0, 16), sticky="w")
+
+        mode_label = ctk.CTkLabel(left_frame, text="Mode de recherche", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
+        mode_label.grid(row=1, column=0, pady=(0, 4), sticky="w")
         
         self.mode_var = ctk.StringVar(value="URL(s)")
         self.mode_menu = ctk.CTkOptionMenu(
-            content,
+            left_frame,
             values=["URL(s)", "Fichier URLs", "Recherche", "Liked Songs", "Playlists utilisateur", "Artistes suivis", "Albums suivis", "Verifier librairie"],
             variable=self.mode_var,
             command=lambda _value: self._update_mode_hint(),
             fg_color="#282828", button_color="#3E3E3E", button_hover_color="#535353", dropdown_fg_color="#282828", height=36
         )
-        self.mode_menu.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="ew")
+        self.mode_menu.grid(row=2, column=0, pady=(0, 4), sticky="ew")
 
-        self.input_hint = ctk.CTkLabel(content, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12), wraplength=360, justify="left")
-        self.input_hint.grid(row=3, column=0, padx=16, pady=(0, 16), sticky="w")
+        self.input_hint = ctk.CTkLabel(left_frame, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12), justify="left")
+        self.input_hint.grid(row=3, column=0, pady=(0, 12), sticky="w")
 
-        self.query_entry = ctk.CTkEntry(content, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
-        self.query_entry.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
+        self.query_entry = ctk.CTkEntry(left_frame, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
+        self.query_entry.grid(row=4, column=0, pady=(0, 8), sticky="ew")
 
-        browse_button = ctk.CTkButton(content, text="Parcourir un fichier", command=self._browse_file, fg_color="transparent", hover_color="#3E3E3E", text_color="#FFFFFF", border_width=1, border_color="#B3B3B3", height=36)
-        browse_button.grid(row=5, column=0, padx=16, pady=(0, 32), sticky="ew")
+        browse_button = ctk.CTkButton(left_frame, text="Parcourir un fichier", command=self._browse_file, fg_color="transparent", hover_color="#3E3E3E", text_color="#FFFFFF", border_width=1, border_color="#B3B3B3", height=36)
+        browse_button.grid(row=5, column=0, sticky="w")
 
-        adv_label = ctk.CTkLabel(content, text="Options avancées", font=ctk.CTkFont(weight="bold"), text_color="#FFFFFF")
-        adv_label.grid(row=6, column=0, padx=16, pady=(0, 12), sticky="w")
+        # --- Right Column ---
+        right_frame = ctk.CTkFrame(content, fg_color="transparent")
+        right_frame.grid(row=0, column=1, sticky="nsew")
+        right_frame.grid_columnconfigure(0, weight=1)
+
+        adv_label = ctk.CTkLabel(right_frame, text="Options avancées", font=ctk.CTkFont(weight="bold"), text_color="#FFFFFF")
+        adv_label.grid(row=0, column=0, pady=(0, 12), sticky="w")
 
         self.persist_var = ctk.BooleanVar(value=False)
         self.debug_var = ctk.BooleanVar(value=False)
         self.no_splash_var = ctk.BooleanVar(value=True)
         
         cb_kwargs = {"border_color": "#535353", "hover_color": "#1ED760", "checkmark_color": "#000000"}
-        ctk.CTkCheckBox(content, text="Session persistante (--persist)", variable=self.persist_var, **cb_kwargs).grid(row=7, column=0, padx=16, pady=6, sticky="w")
-        ctk.CTkCheckBox(content, text="Mode debug (--debug)", variable=self.debug_var, **cb_kwargs).grid(row=8, column=0, padx=16, pady=6, sticky="w")
-        ctk.CTkCheckBox(content, text="Masquer splash (--no-splash)", variable=self.no_splash_var, **cb_kwargs).grid(row=9, column=0, padx=16, pady=(6, 24), sticky="w")
+        ctk.CTkCheckBox(right_frame, text="Session persistante (--persist)", variable=self.persist_var, **cb_kwargs).grid(row=1, column=0, pady=4, sticky="w")
+        ctk.CTkCheckBox(right_frame, text="Mode debug (--debug)", variable=self.debug_var, **cb_kwargs).grid(row=2, column=0, pady=4, sticky="w")
+        ctk.CTkCheckBox(right_frame, text="Masquer splash (--no-splash)", variable=self.no_splash_var, **cb_kwargs).grid(row=3, column=0, pady=(4, 16), sticky="w")
 
-        actions_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        actions_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=16)
+        actions_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        actions_frame.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         actions_frame.grid_columnconfigure((0, 1), weight=1)
 
         self.status_label = ctk.CTkLabel(actions_frame, text="Prêt", text_color="#1DB954", font=ctk.CTkFont(weight="bold"))
-        self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 8), sticky="w")
+        self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 4), sticky="w")
 
         self.progress = ctk.CTkProgressBar(actions_frame, mode="indeterminate", progress_color="#1DB954", fg_color="#3E3E3E")
-        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 16), sticky="ew")
+        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 12), sticky="ew")
         self.progress.set(0)
 
-        self.run_button = ctk.CTkButton(actions_frame, text="Lancer", command=self.run_command, fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=44, corner_radius=22)
-        self.run_button.grid(row=2, column=0, padx=(0, 6), sticky="ew")
+        self.run_button = ctk.CTkButton(actions_frame, text="Lancer", command=self.run_command, fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
+        self.run_button.grid(row=2, column=0, padx=(0, 4), sticky="ew")
         
-        self.stop_button = ctk.CTkButton(actions_frame, text="Arrêter", command=self.stop_command, fg_color="transparent", text_color="#FFFFFF", hover_color="#282828", border_width=1, border_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=44, corner_radius=22)
-        self.stop_button.grid(row=2, column=1, padx=(6, 0), sticky="ew")
+        self.stop_button = ctk.CTkButton(actions_frame, text="Arrêter", command=self.stop_command, fg_color="transparent", text_color="#FFFFFF", hover_color="#282828", border_width=1, border_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
+        self.stop_button.grid(row=2, column=1, padx=(4, 0), sticky="ew")
         self.stop_button.configure(state="disabled")
 
         self._update_mode_hint()
@@ -500,7 +545,7 @@ class ZotifyGUI(ctk.CTk):
 
     def _build_output_panel(self, parent: ctk.CTkFrame) -> None:
         output_panel = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
-        output_panel.grid(row=0, column=1, sticky="nsew")
+        output_panel.grid(row=1, column=0, sticky="nsew")
         output_panel.grid_columnconfigure(0, weight=1)
         output_panel.grid_rowconfigure(1, weight=1)
 
@@ -1021,7 +1066,7 @@ class ZotifyGUI(ctk.CTk):
                             if not self.login_success_detected:
                                 self.login_success_detected = True
                             self._show_login_success_popup()
-                            self.show_page("Accueil")
+                            self.show_page("Download")
                     should_auto_convert_to_wav = (
                         self.current_action == "download"
                         and self.last_process_exit_code == 0
