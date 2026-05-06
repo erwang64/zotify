@@ -102,7 +102,7 @@ class ZotifyGUI(ctk.CTk):
 
         self.home_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.home_page.grid(row=0, column=0, sticky="nsew")
-        self.home_page.grid_columnconfigure(0, weight=0, minsize=350)
+        self.home_page.grid_columnconfigure(0, weight=0, minsize=420)
         self.home_page.grid_columnconfigure(1, weight=1)
         self.home_page.grid_rowconfigure(0, weight=1)
 
@@ -221,7 +221,7 @@ class ZotifyGUI(ctk.CTk):
         )
         self.mode_menu.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="ew")
 
-        self.input_hint = ctk.CTkLabel(content, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12))
+        self.input_hint = ctk.CTkLabel(content, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12), wraplength=360, justify="left")
         self.input_hint.grid(row=3, column=0, padx=16, pady=(0, 16), sticky="w")
 
         self.query_entry = ctk.CTkEntry(content, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
