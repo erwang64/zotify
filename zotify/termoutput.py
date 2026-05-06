@@ -8,6 +8,7 @@ from os import get_terminal_size, system
 from platform import system
 from pprint import pformat
 from re import split, escape
+import sys
 from tabulate import tabulate
 from threading import Thread
 from time import sleep
@@ -349,6 +350,10 @@ class Loader:
         elif mode == 'prog':
             self.steps = ["[∙∙∙]","[●∙∙]","[∙●∙]","[∙∙●]","[∙∙∙]"]
         
+        # Fallback when terminal encoding cannot print unicode loader symbols
+        if not self._supports_unicode_loader():
+            self.steps = ["[...]", "[>..]", "[.>.]", "[..>]", "[...]"]
+        
         self.disabled = disabled
         if self.channel is not PrintChannel.MANDATORY:
             from zotify.config import Zotify
@@ -356,6 +361,17 @@ class Loader:
         self.done = False
         self.paused = False
         self.dead = False
+
+    @staticmethod
+    def _supports_unicode_loader() -> bool:
+        encoding = (sys.stdout.encoding or "").lower()
+        if not encoding:
+            return False
+        try:
+            "∙●◜😐".encode(encoding)
+            return True
+        except UnicodeEncodeError:
+            return False
     
     def _store_active_loader(self):
         self._inherited_active_loader = Printer.ACTIVE_LOADER
