@@ -12,6 +12,16 @@ import webbrowser
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Final
+import math
+from io import BytesIO
+import base64
+
+try:
+    from mutagen.oggvorbis import OggVorbis
+    from mutagen.flac import Picture
+    MUTAGEN_AVAILABLE = True
+except ImportError:
+    MUTAGEN_AVAILABLE = False
 
 import customtkinter as ctk
 from PIL import Image
@@ -118,7 +128,13 @@ class ZotifyGUI(ctk.CTk):
         self.settings_page.grid_columnconfigure(0, weight=1)
         self.settings_page.grid_rowconfigure(0, weight=1)
         
+        self.success_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
+        self.success_page.grid(row=0, column=0, sticky="nsew")
+        self.success_page.grid_columnconfigure(0, weight=1)
+        self.success_page.grid_rowconfigure(0, weight=1)
+        
         self._build_settings_page(self.settings_page)
+        self._build_success_page(self.success_page)
         self._build_left_controls(self.home_page)
         self._build_output_panel(self.home_page)
 
@@ -181,10 +197,150 @@ class ZotifyGUI(ctk.CTk):
         save_btn = ctk.CTkButton(card, text="Sauvegarder", command=self.save_settings, fg_color="#FFFFFF", text_color="#000000", hover_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=48, corner_radius=24, width=200)
         save_btn.grid(row=row_idx, column=0, padx=32, pady=(0, 32), sticky="w")
 
+    def _build_success_page(self, parent: ctk.CTkFrame) -> None:
+        self.success_card = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
+        self.success_card.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.8, relheight=0.8)
+        self.success_card.grid_columnconfigure(0, weight=1)
+        self.success_card.grid_rowconfigure(1, weight=1)
+
+        self.success_header = ctk.CTkFrame(self.success_card, fg_color="transparent")
+        self.success_header.grid(row=0, column=0, pady=(40, 20))
+        self.success_header.grid_columnconfigure(0, weight=1)
+        
+        self.anim_canvas = ctk.CTkCanvas(self.success_header, width=100, height=100, bg="#181818", highlightthickness=0)
+        self.anim_canvas.grid(row=0, column=0, pady=(0, 20))
+        
+        self.success_title = ctk.CTkLabel(self.success_header, text="Téléchargement & Conversion Terminés", font=ctk.CTkFont(size=24, weight="bold"), text_color="#1DB954")
+        self.success_title.grid(row=1, column=0)
+
+        self.track_info_frame = ctk.CTkFrame(self.success_card, fg_color="#282828", corner_radius=8)
+        self.track_info_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
+        self.track_info_frame.grid_columnconfigure(1, weight=1)
+        self.track_info_frame.grid_rowconfigure(0, weight=1)
+
+        self.cover_label = ctk.CTkLabel(self.track_info_frame, text="", width=150, height=150, fg_color="#121212", corner_radius=8)
+        self.cover_label.grid(row=0, column=0, padx=20, pady=20)
+
+        info_inner = ctk.CTkFrame(self.track_info_frame, fg_color="transparent")
+        info_inner.grid(row=0, column=1, padx=(0, 20), pady=20, sticky="w")
+
+        self.success_track_title = ctk.CTkLabel(info_inner, text="Titre", font=ctk.CTkFont(size=20, weight="bold"), text_color="#FFFFFF", anchor="w", justify="left")
+        self.success_track_title.pack(anchor="w", pady=(0, 5))
+        self.success_track_artist = ctk.CTkLabel(info_inner, text="Artiste", font=ctk.CTkFont(size=16), text_color="#B3B3B3", anchor="w", justify="left")
+        self.success_track_artist.pack(anchor="w", pady=(0, 5))
+        self.success_track_album = ctk.CTkLabel(info_inner, text="Album", font=ctk.CTkFont(size=14), text_color="#B3B3B3", anchor="w", justify="left")
+        self.success_track_album.pack(anchor="w")
+
+        buttons_frame = ctk.CTkFrame(self.success_card, fg_color="transparent")
+        buttons_frame.grid(row=2, column=0, pady=(0, 40))
+
+        self.open_folder_btn = ctk.CTkButton(buttons_frame, text="Ouvrir le dossier", command=self._open_download_folder, fg_color="transparent", border_width=1, border_color="#B3B3B3", text_color="#FFFFFF", hover_color="#3E3E3E", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
+        self.open_folder_btn.grid(row=0, column=0, padx=10)
+
+        self.new_download_btn = ctk.CTkButton(buttons_frame, text="Nouveau téléchargement", command=lambda: self.show_page("Accueil"), fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
+        self.new_download_btn.grid(row=0, column=1, padx=10)
+
+    def _open_download_folder(self) -> None:
+        if self.last_downloaded_path and self.last_downloaded_path.parent.exists():
+            if sys.platform == "win32":
+                os.startfile(self.last_downloaded_path.parent)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", self.last_downloaded_path.parent])
+            else:
+                subprocess.Popen(["xdg-open", self.last_downloaded_path.parent])
+
+    def _animate_success_page(self) -> None:
+        self.anim_canvas.delete("all")
+        
+        title = self.last_download_metadata.get("title", "Titre Inconnu")
+        artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
+        album = self.last_download_metadata.get("album", "Album Inconnu")
+        
+        self.success_track_title.configure(text=title)
+        self.success_track_artist.configure(text=artist)
+        self.success_track_album.configure(text=album)
+        self.cover_label.configure(image=None, text="Pas de pochette")
+        
+        if self.last_downloaded_path and MUTAGEN_AVAILABLE:
+            ogg_path = self.last_downloaded_path.with_suffix(".ogg")
+            if not ogg_path.exists():
+                ogg_path = self.last_downloaded_path
+                
+            if ogg_path.exists() and ogg_path.suffix.lower() == ".ogg":
+                try:
+                    audio = OggVorbis(ogg_path)
+                    for b64_data in audio.get("metadata_block_picture", []):
+                        pic = Picture(base64.b64decode(b64_data))
+                        pil_img = Image.open(BytesIO(pic.data))
+                        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
+                        self.cover_label.configure(image=ctk_img, text="")
+                        break
+                except Exception as e:
+                    self._append_console(f"Erreur extraction pochette: {e}\n")
+
+        self._anim_angle = 0
+        self._anim_check_progress = 0
+        self._draw_circle_frame()
+
+    def _draw_circle_frame(self) -> None:
+        self.anim_canvas.delete("circle")
+        size = 100
+        margin = 6
+        color = "#1DB954"
+        
+        self.anim_canvas.create_arc(
+            margin, margin, size - margin, size - margin,
+            start=90, extent=-self._anim_angle, style="arc", outline=color, width=6, tags="circle"
+        )
+        if self._anim_angle < 359:
+            self._anim_angle += 15
+            self.after(16, self._draw_circle_frame)
+        else:
+            self._anim_angle = 359
+            self.anim_canvas.delete("circle")
+            self.anim_canvas.create_arc(
+                margin, margin, size - margin, size - margin,
+                start=90, extent=-359.99, style="arc", outline=color, width=6, tags="circle"
+            )
+            self._draw_check_frame()
+
+    def _draw_check_frame(self) -> None:
+        color = "#1DB954"
+        start_x, start_y = 28, 52
+        mid_x, mid_y = 45, 68
+        end_x, end_y = 72, 35
+        
+        seg1_len = math.hypot(mid_x - start_x, mid_y - start_y)
+        seg2_len = math.hypot(end_x - mid_x, end_y - mid_y)
+        total_len = seg1_len + seg2_len
+        
+        self.anim_canvas.delete("check")
+        
+        if self._anim_check_progress < seg1_len:
+            ratio = self._anim_check_progress / seg1_len
+            cur_x = start_x + (mid_x - start_x) * ratio
+            cur_y = start_y + (mid_y - start_y) * ratio
+            self.anim_canvas.create_line(start_x, start_y, cur_x, cur_y, fill=color, width=6, capstyle="round", joinstyle="round", tags="check")
+        else:
+            self.anim_canvas.create_line(start_x, start_y, mid_x, mid_y, fill=color, width=6, capstyle="round", joinstyle="round", tags="check")
+            ratio = (self._anim_check_progress - seg1_len) / seg2_len
+            if ratio > 1: ratio = 1
+            cur_x = mid_x + (end_x - mid_x) * ratio
+            cur_y = mid_y + (end_y - mid_y) * ratio
+            if ratio > 0:
+                self.anim_canvas.create_line(mid_x, mid_y, cur_x, cur_y, fill=color, width=6, capstyle="round", joinstyle="round", tags="check")
+        
+        if self._anim_check_progress < total_len:
+            self._anim_check_progress += total_len / 15
+            self.after(16, self._draw_check_frame)
+
     def show_page(self, page: str) -> None:
         self.current_page = page
         if page == "Accueil":
             self.home_page.tkraise()
+        elif page == "Success":
+            self.success_page.tkraise()
+            self._animate_success_page()
         else:
             self.settings_page.tkraise()
         self._sync_nav_style()
@@ -390,12 +546,15 @@ class ZotifyGUI(ctk.CTk):
         src = self._resolve_last_downloaded_audio_path()
         if src is None or not src.exists():
             self._append_console("Conversion WAV impossible: fichier source introuvable.\n")
+            self.output_queue.put("__ALL_DONE__")
             return
         if src.suffix.lower() == ".wav":
             self._append_console("Le fichier est deja en WAV.\n")
+            self.output_queue.put("__ALL_DONE__")
             return
         if shutil.which("ffmpeg") is None:
             self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
+            self.output_queue.put("__ALL_DONE__")
             return
 
         dst = src.with_suffix(".wav")
@@ -414,6 +573,7 @@ class ZotifyGUI(ctk.CTk):
                             self.output_queue.put(f"Conversion WAV reussie: {dst} (suppression .ogg impossible: {exc})\n")
                     else:
                         self.output_queue.put(f"Conversion WAV reussie: {dst}\n")
+                    self.output_queue.put("__ALL_DONE__")
                 else:
                     self.output_queue.put("Echec conversion WAV (voir details ffmpeg ci-dessous).\n")
                     if proc.stdout:
@@ -450,7 +610,7 @@ class ZotifyGUI(ctk.CTk):
         return max(candidates, key=lambda p: p.stat().st_mtime)
 
     def _extract_download_metadata(self, msg: str) -> None:
-        downloaded_match = re.search(r'DOWNLOADED:\s*"([^"]+)"', msg)
+        downloaded_match = re.search(r'(?:DOWNLOADED|SKIPPING):\s*"([^"]+)"', msg)
         if downloaded_match:
             raw_path = downloaded_match.group(1).strip()
             parsed = Path(raw_path).expanduser()
@@ -771,6 +931,11 @@ class ZotifyGUI(ctk.CTk):
         try:
             while True:
                 msg = self.output_queue.get_nowait()
+                if msg == "__ALL_DONE__":
+                    self.show_page("Success")
+                    self.current_action = "idle"
+                    self.current_mode = ""
+                    continue
                 if msg == "__PROCESS_DONE__":
                     self.progress.stop()
                     self.run_button.configure(state="normal")
@@ -793,8 +958,13 @@ class ZotifyGUI(ctk.CTk):
                     if should_auto_convert_to_wav:
                         self._append_console("Telechargement termine. Conversion automatique en WAV...\n")
                         self._convert_last_download_to_wav(delete_source_after_success=False)
-                    self.current_action = "idle"
-                    self.current_mode = ""
+                    elif self.current_action == "download" and self.last_process_exit_code == 0:
+                        self.show_page("Success")
+                        self.current_action = "idle"
+                        self.current_mode = ""
+                    else:
+                        self.current_action = "idle"
+                        self.current_mode = ""
                 else:
                     self._extract_download_metadata(msg)
                     exit_match = re.search(r"Processus termine \(code\s+(-?\d+)\)", msg)
