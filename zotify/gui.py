@@ -58,6 +58,7 @@ class ZotifyGUI(ctk.CTk):
         self.last_process_exit_code: int | None = None
         self.last_downloaded_path: Path | None = None
         self.last_download_metadata: dict[str, str] = {}
+        self.current_cover_image: ctk.CTkImage | None = None
 
         self.configure(fg_color="#121212")
         self.grid_columnconfigure(1, weight=1)
@@ -241,13 +242,51 @@ class ZotifyGUI(ctk.CTk):
         self.new_download_btn.grid(row=0, column=1, padx=10)
 
     def _open_download_folder(self) -> None:
-        if self.last_downloaded_path and self.last_downloaded_path.parent.exists():
-            if sys.platform == "win32":
-                os.startfile(self.last_downloaded_path.parent)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", self.last_downloaded_path.parent])
-            else:
-                subprocess.Popen(["xdg-open", self.last_downloaded_path.parent])
+        directory = self._resolve_download_directory_to_open()
+        if directory is None:
+            self._append_console("Impossible d'ouvrir un dossier: aucun chemin valide trouve.\n")
+            return
+
+        self._append_console(f"Tentative d'ouverture du dossier: {directory}\n")
+        try:
+            self._open_path_in_file_manager(directory)
+            self._append_console("Dossier ouvert avec succes.\n")
+        except Exception as exc:
+            self._append_console(f"Erreur d'ouverture du dossier: {exc}\n")
+
+    def _resolve_download_directory_to_open(self) -> Path | None:
+        # Priorite: dossier du dernier telechargement, puis dossier configure.
+        candidates: list[Path] = []
+
+        if self.last_downloaded_path:
+            resolved = self.last_downloaded_path.expanduser()
+            if not resolved.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    resolved = Path(root_raw).expanduser() / resolved
+                else:
+                    resolved = Path.cwd() / resolved
+            candidates.append(resolved)
+
+        root_raw = self.download_dir_entry.get().strip()
+        if root_raw:
+            candidates.append(Path(root_raw).expanduser())
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate if candidate.is_dir() else candidate.parent
+            if candidate.parent.exists():
+                return candidate.parent
+
+        return None
+
+    def _open_path_in_file_manager(self, path: Path) -> None:
+        if sys.platform == "win32":
+            os.startfile(str(path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
 
     def _animate_success_page(self) -> None:
         self.anim_canvas.delete("all")
@@ -259,6 +298,7 @@ class ZotifyGUI(ctk.CTk):
         self.success_track_title.configure(text=title)
         self.success_track_artist.configure(text=artist)
         self.success_track_album.configure(text=album)
+        self.current_cover_image = None
         self.cover_label.configure(image=None, text="Pas de pochette")
         
         if self.last_downloaded_path and MUTAGEN_AVAILABLE:
@@ -268,13 +308,10 @@ class ZotifyGUI(ctk.CTk):
                 
             if ogg_path.exists() and ogg_path.suffix.lower() == ".ogg":
                 try:
-                    audio = OggVorbis(ogg_path)
-                    for b64_data in audio.get("metadata_block_picture", []):
-                        pic = Picture(base64.b64decode(b64_data))
-                        pil_img = Image.open(BytesIO(pic.data))
-                        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
-                        self.cover_label.configure(image=ctk_img, text="")
-                        break
+                    pil_img = self._extract_cover_from_ogg(ogg_path)
+                    if pil_img is not None:
+                        self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
+                        self.cover_label.configure(image=self.current_cover_image, text="")
                 except Exception as e:
                     self._append_console(f"Erreur extraction pochette: {e}\n")
 
@@ -333,6 +370,41 @@ class ZotifyGUI(ctk.CTk):
         if self._anim_check_progress < total_len:
             self._anim_check_progress += total_len / 15
             self.after(16, self._draw_check_frame)
+
+    def _extract_cover_from_ogg(self, ogg_path: Path) -> Image.Image | None:
+        audio = OggVorbis(ogg_path)
+
+        def _to_image(value) -> Image.Image | None:
+            raw: bytes
+            try:
+                raw = value if isinstance(value, bytes) else base64.b64decode(value)
+            except Exception:
+                return None
+
+            # Cas standard OGG Vorbis: FLAC picture serialisee en base64.
+            try:
+                pic = Picture(raw)
+                if pic.data:
+                    img = Image.open(BytesIO(pic.data))
+                    img.load()
+                    return img
+            except Exception:
+                pass
+
+            # Fallback: certains tags "coverart" contiennent directement l'image.
+            try:
+                img = Image.open(BytesIO(raw))
+                img.load()
+                return img
+            except Exception:
+                return None
+
+        for key in ("metadata_block_picture", "coverart"):
+            for value in audio.get(key, []):
+                image = _to_image(value)
+                if image is not None:
+                    return image
+        return None
 
     def show_page(self, page: str) -> None:
         self.current_page = page
