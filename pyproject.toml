@@ -23,6 +23,7 @@ classifiers = [
   "Operating System :: OS Independent"
 ]
 dependencies = [
+  "customtkinter",
   "librespot @ git+https://github.com/Googolplexed0/librespot-python.git",
   "ffmpy",
   "music_tag",
@@ -36,3 +37,4 @@ dependencies = [
 
 [project.scripts]
 zotify = "zotify.__main__:main"
+zotify-gui = "zotify.gui:launch_gui"

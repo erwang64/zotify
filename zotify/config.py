@@ -1,5 +1,6 @@
 import json
 import logging
+import socket
 import sys
 import re
 import requests
@@ -707,7 +708,17 @@ class Zotify:
                 Printer.hashtaged(PrintChannel.MANDATORY, f"Login via commandline args failed! Falling back to interactive login")
         
         # interactive OAuth login
+        # Prefer default callback port, but fall back to a free local port if needed.
+        host = cls.CONFIG.get_oauth_address()
         port = 4381
+        for _ in range(32):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind((host, port))
+                    break
+                except OSError:
+                    port += 1
         redirect_url = f"http://{cls.CONFIG.get_oauth_address()}:{port}/login"
         def oauth_print(url):
             Printer.new_print(PrintChannel.MANDATORY, f"Click on the following link to login:\n{url}")
@@ -766,7 +777,9 @@ class Zotify:
             login_try = 0
             while login_try <= cls.CONFIG.get_retry_attempts():
                 login_try += 1
-                try: cls.login(args)
+                try:
+                    cls.login(args)
+                    break  # login succeeded, exit retry loop
                 except ConnectionError as e:
                     Printer.hashtaged(PrintChannel.WARNING, f'LOGIN FAILED ({e.args[0]})\n' + 
                                                              'TRYING AGAIN AFTER SMALL WAIT')

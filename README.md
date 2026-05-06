@@ -91,6 +91,19 @@ If an artist's URL is given, all albums by the specified artist will be download
 | `--update-config`                   | Updates the `config.json` file while keeping all current settings unchanged                                    |
 | `--update-archive`                  | Updates the `.song_archive` file entries with full paths while keeping non-findable entries unchanged          |
 | `--debug`                           | Enable debug mode, printing extra information and creating a `config_DEBUG.json` file                          |
+| `--gui`                             | Launch the modern desktop interface                                                                              |
+
+## Graphical Interface
+
+Zotify now includes a modern desktop GUI with:
+- Dark mode and responsive layout
+- Embedded live console output
+- Quick mode selection (URLs, search, liked songs, playlists, artists, albums, verify library)
+- Built-in file picker for URL list files
+
+Launch options:
+- `(python -m) zotify --gui`
+- `zotify-gui`
 
 | Command Line Config Flag            | Value                                                                                                          |
 |-------------------------------------|----------------------------------------------------------------------------------------------------------------|

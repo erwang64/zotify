@@ -6,6 +6,8 @@ It's like youtube-dl, but for that other music platform.
 """
 
 import argparse
+import sys
+from pathlib import Path
 
 from zotify.app import client
 from zotify.config import Zotify, CONFIG_VALUES, DEPRECIATED_CONFIGS
@@ -29,6 +31,24 @@ DEPRECIATED_FLAGS = (
 
 
 def main():
+    if "--gui" in sys.argv:
+        try:
+            from zotify.gui import launch_gui
+        except ModuleNotFoundError as e:
+            missing_module = getattr(e, "name", "")
+            if missing_module == "customtkinter":
+                print(
+                    "GUI dependency missing: customtkinter.\n"
+                    "Install it with:\n"
+                    "  python -m pip install customtkinter\n"
+                    "Then run again:\n"
+                    "  python -m zotify --gui"
+                )
+                return
+            raise
+        launch_gui()
+        return
+
     parser = argparse.ArgumentParser(prog='zotify',
         description='A music and podcast downloader needing only Python and FFMPEG.')
     
@@ -55,6 +75,18 @@ def main():
                         action='store_true',
                         dest='debug',
                         help='Enable debug mode, prints extra information and creates a `config_DEBUG.json` file')
+    parser.add_argument('--gui',
+                        action='store_true',
+                        dest='gui',
+                        help='Launch the modern desktop GUI')
+    parser.add_argument('--login-only',
+                        action='store_true',
+                        dest='login_only',
+                        help='Authenticate and exit without running a download query')
+    parser.add_argument('--logout',
+                        action='store_true',
+                        dest='logout',
+                        help='Delete saved Spotify credentials and exit')
     parser.add_argument('-ns', '--no-splash',
                         action='store_true',
                         dest='no_splash',
@@ -134,7 +166,22 @@ def main():
                             )
     
     args = parser.parse_args()
+
+    if args.logout:
+        Zotify.CONFIG.load(args)
+        cred_path = Path(Zotify.CONFIG.get_credentials_location())
+        if cred_path.exists():
+            cred_path.unlink()
+            print(f"Credentials removed: {cred_path}")
+        else:
+            print(f"No credentials file found at: {cred_path}")
+        return
+
     Zotify.boot(args)
+    if args.login_only:
+        print("Spotify login completed.")
+        Zotify.end()
+        return
     client(args, modes)
 
 
