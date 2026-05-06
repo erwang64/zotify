@@ -42,153 +42,137 @@ class ZotifyGUI(ctk.CTk):
         self.login_success_detected = False
         self.last_console_line = ""
 
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.configure(fg_color="#121212")
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        self._build_header()
-        self._build_main_layout()
+        self._build_navbar()
+        self._build_pages()
         self.after(100, self._drain_output_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_header(self) -> None:
-        header = ctk.CTkFrame(self, corner_radius=0, fg_color="#111319")
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-
-        logo_path = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
-        self.logo_image = None
-        if logo_path.exists():
-            pil_img = Image.open(logo_path)
-            self.logo_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(280, 90))
-            logo_label = ctk.CTkLabel(header, image=self.logo_image, text="")
-            logo_label.grid(row=0, column=0, padx=18, pady=14, sticky="w")
-        else:
-            title = ctk.CTkLabel(
-                header,
-                text="Zotify",
-                font=ctk.CTkFont(size=40, weight="bold"),
-                text_color="#25D366",
-            )
-            title.grid(row=0, column=0, padx=20, pady=14, sticky="w")
-
-        subtitle = ctk.CTkLabel(
-            header,
-            text="Interface moderne pour telecharger musique et podcasts",
-            text_color="#BCC4D0",
-            font=ctk.CTkFont(size=14),
-        )
-        subtitle.grid(row=0, column=1, padx=(0, 20), pady=14, sticky="w")
-
-    def _build_main_layout(self) -> None:
-        main = ctk.CTkFrame(self, fg_color="transparent")
-        main.grid(row=1, column=0, sticky="nsew", padx=16, pady=16)
-        main.grid_columnconfigure(0, weight=0, minsize=200)
-        main.grid_columnconfigure(1, weight=1)
-        main.grid_rowconfigure(0, weight=1)
-
-        self._build_navbar(main)
-        self._build_pages(main)
-
-    def _build_navbar(self, parent: ctk.CTkFrame) -> None:
-        nav = ctk.CTkFrame(parent, width=190)
-        nav.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+    def _build_navbar(self) -> None:
+        nav = ctk.CTkFrame(self, width=240, fg_color="#000000", corner_radius=0)
+        nav.grid(row=0, column=0, sticky="nsew")
         nav.grid_propagate(False)
         nav.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(nav, text="Navigation", font=ctk.CTkFont(size=18, weight="bold")).grid(
-            row=0, column=0, padx=14, pady=(16, 12), sticky="w"
-        )
+        logo_path = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
+        if logo_path.exists():
+            pil_img = Image.open(logo_path)
+            self.logo_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(160, 52))
+            logo_label = ctk.CTkLabel(nav, image=self.logo_image, text="")
+            logo_label.grid(row=0, column=0, padx=24, pady=(32, 32), sticky="w")
+        else:
+            title = ctk.CTkLabel(nav, text="Zotify", font=ctk.CTkFont(size=32, weight="bold"), text_color="#1DB954")
+            title.grid(row=0, column=0, padx=24, pady=(32, 32), sticky="w")
 
-        self.home_nav_btn = ctk.CTkButton(nav, text="Accueil", command=lambda: self.show_page("Accueil"))
-        self.home_nav_btn.grid(row=1, column=0, padx=14, pady=(0, 8), sticky="ew")
+        btn_kwargs = {
+            "corner_radius": 4, "anchor": "w", "font": ctk.CTkFont(size=15, weight="bold"),
+            "height": 40, "hover_color": "#282828", "fg_color": "transparent", "text_color": "#B3B3B3"
+        }
+        self.home_nav_btn = ctk.CTkButton(nav, text="Accueil", command=lambda: self.show_page("Accueil"), **btn_kwargs)
+        self.home_nav_btn.grid(row=1, column=0, padx=12, pady=4, sticky="ew")
 
-        self.settings_nav_btn = ctk.CTkButton(nav, text="Settings", command=lambda: self.show_page("Settings"))
-        self.settings_nav_btn.grid(row=2, column=0, padx=14, pady=(0, 8), sticky="ew")
+        self.settings_nav_btn = ctk.CTkButton(nav, text="Paramètres", command=lambda: self.show_page("Settings"), **btn_kwargs)
+        self.settings_nav_btn.grid(row=2, column=0, padx=12, pady=4, sticky="ew")
 
-        self.nav_auth_button = ctk.CTkButton(nav, text="Se connecter", command=self.toggle_spotify_auth)
-        self.nav_auth_button.grid(row=3, column=0, padx=14, pady=(6, 8), sticky="ew")
+        nav.grid_rowconfigure(3, weight=1)
 
-        self.nav_auth_status = ctk.CTkLabel(nav, text="Spotify: deconnecte", text_color="#9AA6B2")
-        self.nav_auth_status.grid(row=4, column=0, padx=14, pady=(0, 8), sticky="w")
+        auth_frame = ctk.CTkFrame(nav, fg_color="#181818", corner_radius=8)
+        auth_frame.grid(row=4, column=0, padx=12, pady=24, sticky="ew")
+        auth_frame.grid_columnconfigure(0, weight=1)
+        
+        self.nav_auth_status = ctk.CTkLabel(auth_frame, text="Spotify: déconnecté", text_color="#B3B3B3", font=ctk.CTkFont(size=12, weight="bold"))
+        self.nav_auth_status.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
+
+        self.nav_auth_button = ctk.CTkButton(auth_frame, text="Se connecter", command=self.toggle_spotify_auth,
+                                             fg_color="transparent", border_width=1, border_color="#B3B3B3", 
+                                             text_color="#FFFFFF", hover_color="#282828", corner_radius=20, height=32,
+                                             font=ctk.CTkFont(weight="bold"))
+        self.nav_auth_button.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
 
         self._sync_nav_style()
 
-    def _build_pages(self, parent: ctk.CTkFrame) -> None:
-        self.pages_container = ctk.CTkFrame(parent)
-        self.pages_container.grid(row=0, column=1, sticky="nsew")
+    def _build_pages(self) -> None:
+        self.pages_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.pages_container.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.pages_container.grid_columnconfigure(0, weight=1)
         self.pages_container.grid_rowconfigure(0, weight=1)
 
         self.home_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.home_page.grid(row=0, column=0, sticky="nsew")
-        self.home_page.grid_columnconfigure(0, weight=0)
+        self.home_page.grid_columnconfigure(0, weight=0, minsize=350)
         self.home_page.grid_columnconfigure(1, weight=1)
         self.home_page.grid_rowconfigure(0, weight=1)
-        self._build_left_controls(self.home_page)
-        self._build_output_panel(self.home_page)
 
         self.settings_page = ctk.CTkFrame(self.pages_container, fg_color="transparent")
         self.settings_page.grid(row=0, column=0, sticky="nsew")
         self.settings_page.grid_columnconfigure(0, weight=1)
+        self.settings_page.grid_rowconfigure(0, weight=1)
+        
         self._build_settings_page(self.settings_page)
+        self._build_left_controls(self.home_page)
+        self._build_output_panel(self.home_page)
 
         self.show_page("Accueil")
 
     def _build_settings_page(self, parent: ctk.CTkFrame) -> None:
-        card = ctk.CTkFrame(parent)
+        card = ctk.CTkScrollableFrame(parent, fg_color="#181818", corner_radius=12)
         card.grid(row=0, column=0, sticky="nsew")
         card.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(card, text="Settings", font=ctk.CTkFont(size=24, weight="bold")).grid(
-            row=0, column=0, padx=16, pady=(16, 8), sticky="w"
-        )
-        ctk.CTkLabel(
-            card,
-            text="Configure les parametres de l'app et les dossiers de telechargement.",
-            text_color="#9AA6B2",
-        ).grid(row=1, column=0, padx=16, pady=(0, 16), sticky="w")
+        title = ctk.CTkLabel(card, text="Paramètres", font=ctk.CTkFont(size=32, weight="bold"), text_color="#FFFFFF")
+        title.grid(row=0, column=0, padx=32, pady=(32, 8), sticky="w")
+        
+        subtitle = ctk.CTkLabel(card, text="Configure les dossiers, le client API et l'authentification.", text_color="#B3B3B3")
+        subtitle.grid(row=1, column=0, padx=32, pady=(0, 32), sticky="w")
 
-        ctk.CTkLabel(card, text="Dossier musique (ROOT_PATH)").grid(row=2, column=0, padx=16, pady=(0, 4), sticky="w")
-        music_row = ctk.CTkFrame(card, fg_color="transparent")
-        music_row.grid(row=3, column=0, padx=16, pady=(0, 10), sticky="ew")
-        music_row.grid_columnconfigure(0, weight=1)
-        self.download_dir_entry = ctk.CTkEntry(music_row, placeholder_text="Ex: D:/Music/Zotify")
-        self.download_dir_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        row_idx = 2
+        def add_entry(label_text, placeholder="", has_browse=False, browse_cmd=None, is_password=False):
+            nonlocal row_idx
+            ctk.CTkLabel(card, text=label_text, font=ctk.CTkFont(weight="bold", size=14), text_color="#FFFFFF").grid(row=row_idx, column=0, padx=32, pady=(16, 8), sticky="w")
+            row_idx += 1
+            row_frame = ctk.CTkFrame(card, fg_color="transparent")
+            row_frame.grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="ew")
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_idx += 1
+            entry = ctk.CTkEntry(row_frame, placeholder_text=placeholder, fg_color="#282828", border_width=0, height=40, show="*" if is_password else "")
+            entry.grid(row=0, column=0, sticky="ew", padx=(0, 16 if has_browse else 0))
+            if has_browse:
+                ctk.CTkButton(row_frame, text="Parcourir", command=browse_cmd, fg_color="transparent", hover_color="#3E3E3E", border_width=1, border_color="#B3B3B3", text_color="#FFFFFF", width=100, height=40).grid(row=0, column=1)
+            return entry
+
+        self.download_dir_entry = add_entry("Dossier Musique (ROOT_PATH)", "Ex: D:/Music/Zotify", True, lambda: self._browse_directory(self.download_dir_entry))
         self.download_dir_entry.insert(0, self.gui_settings.get("download_dir", ""))
-        ctk.CTkButton(music_row, text="Parcourir", width=120, command=lambda: self._browse_directory(self.download_dir_entry)).grid(
-            row=0, column=1, sticky="e"
-        )
 
-        ctk.CTkLabel(card, text="Dossier podcasts (ROOT_PODCAST_PATH)").grid(row=4, column=0, padx=16, pady=(0, 4), sticky="w")
-        pod_row = ctk.CTkFrame(card, fg_color="transparent")
-        pod_row.grid(row=5, column=0, padx=16, pady=(0, 12), sticky="ew")
-        pod_row.grid_columnconfigure(0, weight=1)
-        self.podcast_dir_entry = ctk.CTkEntry(pod_row, placeholder_text="Ex: D:/Music/Zotify Podcasts")
-        self.podcast_dir_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.podcast_dir_entry = add_entry("Dossier Podcasts (ROOT_PODCAST_PATH)", "Ex: D:/Music/Zotify Podcasts", True, lambda: self._browse_directory(self.podcast_dir_entry))
         self.podcast_dir_entry.insert(0, self.gui_settings.get("podcast_dir", ""))
-        ctk.CTkButton(pod_row, text="Parcourir", width=120, command=lambda: self._browse_directory(self.podcast_dir_entry)).grid(
-            row=0, column=1, sticky="e"
-        )
 
-        ctk.CTkLabel(card, text="Config par defaut (optionnel)").grid(row=6, column=0, padx=16, pady=(0, 4), sticky="w")
-        cfg_row = ctk.CTkFrame(card, fg_color="transparent")
-        cfg_row.grid(row=7, column=0, padx=16, pady=(0, 16), sticky="ew")
-        cfg_row.grid_columnconfigure(0, weight=1)
-        self.default_config_entry = ctk.CTkEntry(cfg_row, placeholder_text="Dossier ou fichier config.json")
-        self.default_config_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.default_config_entry = add_entry("Fichier de Configuration JSON", "Dossier ou fichier config.json", True, self._browse_default_config)
         self.default_config_entry.insert(0, self.gui_settings.get("default_config_path", ""))
-        ctk.CTkButton(cfg_row, text="Parcourir", width=120, command=self._browse_default_config).grid(row=0, column=1, sticky="e")
 
-        ctk.CTkLabel(card, text="Client ID API Spotify (optionnel)").grid(row=8, column=0, padx=16, pady=(0, 4), sticky="w")
-        self.client_id_entry = ctk.CTkEntry(card, placeholder_text="Laisser vide pour le client interne")
-        self.client_id_entry.grid(row=9, column=0, padx=16, pady=(0, 16), sticky="ew")
+        self.client_id_entry = add_entry("Client ID API Spotify", "Laisser vide pour le client interne")
         self.client_id_entry.insert(0, self.gui_settings.get("api_client_id", ""))
 
-        self.settings_info = ctk.CTkLabel(card, text="", text_color="#9AA6B2")
-        self.settings_info.grid(row=10, column=0, padx=16, pady=(0, 10), sticky="w")
-        ctk.CTkButton(card, text="Sauvegarder les settings", command=self.save_settings).grid(
-            row=11, column=0, padx=16, pady=(0, 16), sticky="w"
-        )
+        ctk.CTkLabel(card, text="Authentification manuelle (Alternative à OAuth)", font=ctk.CTkFont(weight="bold", size=14), text_color="#FFFFFF").grid(row=row_idx, column=0, padx=32, pady=(32, 8), sticky="w")
+        row_idx += 1
+        auth_frame = ctk.CTkFrame(card, fg_color="transparent")
+        auth_frame.grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="ew")
+        auth_frame.grid_columnconfigure((0, 1), weight=1)
+        row_idx += 1
+        
+        self.username_entry = ctk.CTkEntry(auth_frame, placeholder_text="Username", fg_color="#282828", border_width=0, height=40)
+        self.username_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.token_entry = ctk.CTkEntry(auth_frame, placeholder_text="Token (login5)", show="*", fg_color="#282828", border_width=0, height=40)
+        self.token_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        self.settings_info = ctk.CTkLabel(card, text="", text_color="#B3B3B3")
+        self.settings_info.grid(row=row_idx, column=0, padx=32, pady=(24, 8), sticky="w")
+        row_idx += 1
+        
+        save_btn = ctk.CTkButton(card, text="Sauvegarder", command=self.save_settings, fg_color="#FFFFFF", text_color="#000000", hover_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=48, corner_radius=24, width=200)
+        save_btn.grid(row=row_idx, column=0, padx=32, pady=(0, 32), sticky="w")
 
     def show_page(self, page: str) -> None:
         self.current_page = page
@@ -199,114 +183,106 @@ class ZotifyGUI(ctk.CTk):
         self._sync_nav_style()
 
     def _sync_nav_style(self) -> None:
-        selected_color = "#16A34A"
-        default_color = "#1F2937"
-        self.home_nav_btn.configure(fg_color=selected_color if self.current_page == "Accueil" else default_color)
-        self.settings_nav_btn.configure(fg_color=selected_color if self.current_page == "Settings" else default_color)
+        selected_bg = "#282828"
+        selected_text = "#FFFFFF"
+        default_bg = "transparent"
+        default_text = "#B3B3B3"
+        
+        if self.current_page == "Accueil":
+            self.home_nav_btn.configure(fg_color=selected_bg, text_color=selected_text)
+            self.settings_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+        else:
+            self.home_nav_btn.configure(fg_color=default_bg, text_color=default_text)
+            self.settings_nav_btn.configure(fg_color=selected_bg, text_color=selected_text)
 
     def _build_left_controls(self, parent: ctk.CTkFrame) -> None:
-        panel = ctk.CTkFrame(parent, width=350)
-        panel.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
-        panel.grid_propagate(False)
+        panel = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
+        panel.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
         panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(0, weight=1)
 
-        title = ctk.CTkLabel(panel, text="Commandes", font=ctk.CTkFont(size=20, weight="bold"))
-        title.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="w")
+        content = ctk.CTkScrollableFrame(panel, fg_color="transparent")
+        content.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        content.grid_columnconfigure(0, weight=1)
 
-        mode_label = ctk.CTkLabel(panel, text="Mode")
-        mode_label.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="w")
+        title = ctk.CTkLabel(content, text="Téléchargement", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFFFFF")
+        title.grid(row=0, column=0, padx=16, pady=(20, 24), sticky="w")
+
+        mode_label = ctk.CTkLabel(content, text="Mode de recherche", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
+        mode_label.grid(row=1, column=0, padx=16, pady=(0, 8), sticky="w")
+        
         self.mode_var = ctk.StringVar(value="URL(s)")
         self.mode_menu = ctk.CTkOptionMenu(
-            panel,
-            values=[
-                "URL(s)",
-                "Fichier URLs",
-                "Recherche",
-                "Liked Songs",
-                "Playlists utilisateur",
-                "Artistes suivis",
-                "Albums suivis",
-                "Verifier librairie",
-            ],
+            content,
+            values=["URL(s)", "Fichier URLs", "Recherche", "Liked Songs", "Playlists utilisateur", "Artistes suivis", "Albums suivis", "Verifier librairie"],
             variable=self.mode_var,
             command=lambda _value: self._update_mode_hint(),
+            fg_color="#282828", button_color="#3E3E3E", button_hover_color="#535353", dropdown_fg_color="#282828", height=36
         )
-        self.mode_menu.grid(row=2, column=0, padx=16, pady=(0, 10), sticky="ew")
+        self.mode_menu.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="ew")
 
-        self.input_hint = ctk.CTkLabel(panel, text="Entrez une ou plusieurs URL separees par un espace")
-        self.input_hint.grid(row=3, column=0, padx=16, pady=(0, 4), sticky="w")
+        self.input_hint = ctk.CTkLabel(content, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12))
+        self.input_hint.grid(row=3, column=0, padx=16, pady=(0, 16), sticky="w")
 
-        self.query_entry = ctk.CTkEntry(panel, placeholder_text="URL, recherche ou chemin de fichier")
+        self.query_entry = ctk.CTkEntry(content, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
         self.query_entry.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
 
-        browse_button = ctk.CTkButton(panel, text="Parcourir un fichier", command=self._browse_file)
-        browse_button.grid(row=5, column=0, padx=16, pady=(0, 10), sticky="ew")
+        browse_button = ctk.CTkButton(content, text="Parcourir un fichier", command=self._browse_file, fg_color="transparent", hover_color="#3E3E3E", text_color="#FFFFFF", border_width=1, border_color="#B3B3B3", height=36)
+        browse_button.grid(row=5, column=0, padx=16, pady=(0, 32), sticky="ew")
 
-        config_label = ctk.CTkLabel(panel, text="Config optionnelle (.json ou dossier)")
-        config_label.grid(row=6, column=0, padx=16, pady=(0, 4), sticky="w")
-        self.config_entry = ctk.CTkEntry(panel, placeholder_text="Chemin de config")
-        self.config_entry.grid(row=7, column=0, padx=16, pady=(0, 8), sticky="ew")
-        saved_config = self.gui_settings.get("default_config_path", "")
-        if saved_config:
-            self.config_entry.insert(0, saved_config)
-
-        creds_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        creds_frame.grid(row=8, column=0, padx=16, pady=(0, 8), sticky="ew")
-        creds_frame.grid_columnconfigure((0, 1), weight=1)
-        self.username_entry = ctk.CTkEntry(creds_frame, placeholder_text="Username (optionnel)")
-        self.username_entry.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        self.token_entry = ctk.CTkEntry(creds_frame, placeholder_text="Token (optionnel)", show="*")
-        self.token_entry.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        adv_label = ctk.CTkLabel(content, text="Options avancées", font=ctk.CTkFont(weight="bold"), text_color="#FFFFFF")
+        adv_label.grid(row=6, column=0, padx=16, pady=(0, 12), sticky="w")
 
         self.persist_var = ctk.BooleanVar(value=False)
         self.debug_var = ctk.BooleanVar(value=False)
         self.no_splash_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(panel, text="Session persistante (--persist)", variable=self.persist_var).grid(
-            row=9, column=0, padx=16, pady=(4, 0), sticky="w"
-        )
-        ctk.CTkCheckBox(panel, text="Mode debug (--debug)", variable=self.debug_var).grid(
-            row=10, column=0, padx=16, pady=(2, 0), sticky="w"
-        )
-        ctk.CTkCheckBox(panel, text="Masquer splash (--no-splash)", variable=self.no_splash_var).grid(
-            row=11, column=0, padx=16, pady=(2, 10), sticky="w"
-        )
+        
+        cb_kwargs = {"border_color": "#535353", "hover_color": "#1ED760", "checkmark_color": "#000000"}
+        ctk.CTkCheckBox(content, text="Session persistante (--persist)", variable=self.persist_var, **cb_kwargs).grid(row=7, column=0, padx=16, pady=6, sticky="w")
+        ctk.CTkCheckBox(content, text="Mode debug (--debug)", variable=self.debug_var, **cb_kwargs).grid(row=8, column=0, padx=16, pady=6, sticky="w")
+        ctk.CTkCheckBox(content, text="Masquer splash (--no-splash)", variable=self.no_splash_var, **cb_kwargs).grid(row=9, column=0, padx=16, pady=(6, 24), sticky="w")
 
-        self.status_label = ctk.CTkLabel(panel, text="Pret", text_color="#9AA6B2")
-        self.status_label.grid(row=12, column=0, padx=16, pady=(0, 8), sticky="w")
+        actions_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        actions_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=16)
+        actions_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.progress = ctk.CTkProgressBar(panel, mode="indeterminate")
-        self.progress.grid(row=13, column=0, padx=16, pady=(0, 10), sticky="ew")
+        self.status_label = ctk.CTkLabel(actions_frame, text="Prêt", text_color="#1DB954", font=ctk.CTkFont(weight="bold"))
+        self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 8), sticky="w")
+
+        self.progress = ctk.CTkProgressBar(actions_frame, mode="indeterminate", progress_color="#1DB954", fg_color="#3E3E3E")
+        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 16), sticky="ew")
         self.progress.set(0)
 
-        actions = ctk.CTkFrame(panel, fg_color="transparent")
-        actions.grid(row=14, column=0, padx=16, pady=(0, 16), sticky="ew")
-        actions.grid_columnconfigure((0, 1), weight=1)
-        self.run_button = ctk.CTkButton(actions, text="Lancer", command=self.run_command)
-        self.run_button.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        self.stop_button = ctk.CTkButton(actions, text="Arreter", fg_color="#B91C1C", hover_color="#991B1B", command=self.stop_command)
-        self.stop_button.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        self.run_button = ctk.CTkButton(actions_frame, text="Lancer", command=self.run_command, fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=44, corner_radius=22)
+        self.run_button.grid(row=2, column=0, padx=(0, 6), sticky="ew")
+        
+        self.stop_button = ctk.CTkButton(actions_frame, text="Arrêter", command=self.stop_command, fg_color="transparent", text_color="#FFFFFF", hover_color="#282828", border_width=1, border_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=44, corner_radius=22)
+        self.stop_button.grid(row=2, column=1, padx=(6, 0), sticky="ew")
         self.stop_button.configure(state="disabled")
 
         self._update_mode_hint()
         self._refresh_auth_status()
 
     def _build_output_panel(self, parent: ctk.CTkFrame) -> None:
-        output_panel = ctk.CTkFrame(parent)
+        output_panel = ctk.CTkFrame(parent, fg_color="#181818", corner_radius=12)
         output_panel.grid(row=0, column=1, sticky="nsew")
         output_panel.grid_columnconfigure(0, weight=1)
         output_panel.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(output_panel, text="Console", font=ctk.CTkFont(size=18, weight="bold")).grid(
-            row=0, column=0, padx=16, pady=(16, 8), sticky="w"
-        )
+        header_frame = ctk.CTkFrame(output_panel, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 12))
+        header_frame.grid_columnconfigure(0, weight=1)
 
-        self.console = ctk.CTkTextbox(output_panel, wrap="word", font=("Consolas", 13))
-        self.console.grid(row=1, column=0, padx=16, pady=(0, 12), sticky="nsew")
-        self.console.insert("end", "Bienvenue dans Zotify GUI.\n")
+        title = ctk.CTkLabel(header_frame, text="Console", font=ctk.CTkFont(size=20, weight="bold"), text_color="#FFFFFF")
+        title.grid(row=0, column=0, sticky="w")
+
+        clear_button = ctk.CTkButton(header_frame, text="Effacer", command=self._clear_console, width=80, height=32, fg_color="transparent", text_color="#B3B3B3", hover_color="#282828", border_width=1, border_color="#535353", corner_radius=16)
+        clear_button.grid(row=0, column=1, sticky="e")
+
+        self.console = ctk.CTkTextbox(output_panel, wrap="word", font=("Consolas", 13), fg_color="#121212", text_color="#1DB954", corner_radius=8)
+        self.console.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="nsew")
+        self.console.insert("end", "Prêt pour le téléchargement.\n")
         self._setup_console_clipboard()
-
-        clear_button = ctk.CTkButton(output_panel, text="Effacer la console", command=self._clear_console)
-        clear_button.grid(row=2, column=0, padx=16, pady=(0, 16), sticky="e")
 
     def _clear_console(self) -> None:
         self.console.delete("1.0", "end")
@@ -431,7 +407,7 @@ class ZotifyGUI(ctk.CTk):
 
     def _build_base_cli_args(self) -> list[str]:
         args = [sys.executable, "-u", "-m", "zotify"]
-        config_path = self.config_entry.get().strip()
+        config_path = self.default_config_entry.get().strip()
         username = self.username_entry.get().strip()
         token = self.token_entry.get().strip()
         download_dir = self.download_dir_entry.get().strip()
@@ -471,7 +447,11 @@ class ZotifyGUI(ctk.CTk):
         The GUI must replicate this so the auth status display is accurate.
         """
         # Step 1: Determine config directory (same logic as Config.load)
-        config_input = self.config_entry.get().strip()
+        if hasattr(self, 'default_config_entry'):
+            config_input = self.default_config_entry.get().strip()
+        else:
+            config_input = self.gui_settings.get("default_config_path", "")
+
         if config_input:
             config_dir_or_file = Path(config_input).expanduser()
         else:
@@ -511,11 +491,11 @@ class ZotifyGUI(ctk.CTk):
     def _refresh_auth_status(self) -> None:
         cred_path = self._resolve_credentials_path()
         if cred_path.exists():
-            self.nav_auth_status.configure(text="Spotify: connecte", text_color="#22C55E")
-            self.nav_auth_button.configure(text="Se deconnecter", fg_color="#374151", hover_color="#1F2937")
+            self.nav_auth_status.configure(text="Spotify: Connecté", text_color="#1DB954")
+            self.nav_auth_button.configure(text="Se déconnecter", fg_color="transparent", border_color="#535353")
         else:
-            self.nav_auth_status.configure(text="Spotify: deconnecte", text_color="#9AA6B2")
-            self.nav_auth_button.configure(text="Se connecter", fg_color="#16A34A", hover_color="#15803D")
+            self.nav_auth_status.configure(text="Spotify: Déconnecté", text_color="#B3B3B3")
+            self.nav_auth_button.configure(text="Se connecter", fg_color="transparent", border_color="#B3B3B3")
 
     def _resolve_settings_path(self) -> Path:
         if sys.platform == "win32":
@@ -550,13 +530,10 @@ class ZotifyGUI(ctk.CTk):
         try:
             with open(self.settings_path, "w", encoding="utf-8") as settings_file:
                 json.dump(self.gui_settings, settings_file, indent=2)
-            self.settings_info.configure(text="Settings sauvegardes.", text_color="#22C55E")
-            self.config_entry.delete(0, "end")
-            if self.gui_settings["default_config_path"]:
-                self.config_entry.insert(0, self.gui_settings["default_config_path"])
-            self._append_console(f"Settings sauvegardes: {self.settings_path}\n")
+            self.settings_info.configure(text="Paramètres sauvegardés.", text_color="#1DB954")
+            self._append_console(f"Paramètres sauvegardés : {self.settings_path}\n")
         except OSError as exc:
-            self.settings_info.configure(text=f"Erreur sauvegarde: {exc}", text_color="#EF4444")
+            self.settings_info.configure(text=f"Erreur sauvegarde : {exc}", text_color="#E22134")
 
     def _update_mode_hint(self) -> None:
         hints = {
