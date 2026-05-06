@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -41,6 +43,11 @@ class ZotifyGUI(ctk.CTk):
         self.login_flow_active = False
         self.login_success_detected = False
         self.last_console_line = ""
+        self.current_action = "idle"
+        self.current_mode = ""
+        self.last_process_exit_code: int | None = None
+        self.last_downloaded_path: Path | None = None
+        self.last_download_metadata: dict[str, str] = {}
 
         self.configure(fg_color="#121212")
         self.grid_columnconfigure(1, weight=1)
@@ -379,6 +386,90 @@ class ZotifyGUI(ctk.CTk):
 
         ctk.CTkButton(popup, text="OK", command=popup.destroy).pack(padx=20, pady=(0, 16), anchor="e")
 
+    def _convert_last_download_to_wav(self, delete_source_after_success: bool = True) -> None:
+        src = self._resolve_last_downloaded_audio_path()
+        if src is None or not src.exists():
+            self._append_console("Conversion WAV impossible: fichier source introuvable.\n")
+            return
+        if src.suffix.lower() == ".wav":
+            self._append_console("Le fichier est deja en WAV.\n")
+            return
+        if shutil.which("ffmpeg") is None:
+            self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
+            return
+
+        dst = src.with_suffix(".wav")
+        self._append_console(f"Conversion en WAV en cours: {src.name} -> {dst.name}\n")
+
+        def worker() -> None:
+            cmd = ["ffmpeg", "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst)]
+            try:
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                if proc.returncode == 0:
+                    if delete_source_after_success and src.suffix.lower() == ".ogg":
+                        try:
+                            src.unlink()
+                            self.output_queue.put(f"Conversion WAV reussie: {dst} (source .ogg supprimee)\n")
+                        except OSError as exc:
+                            self.output_queue.put(f"Conversion WAV reussie: {dst} (suppression .ogg impossible: {exc})\n")
+                    else:
+                        self.output_queue.put(f"Conversion WAV reussie: {dst}\n")
+                else:
+                    self.output_queue.put("Echec conversion WAV (voir details ffmpeg ci-dessous).\n")
+                    if proc.stdout:
+                        self.output_queue.put(proc.stdout + "\n")
+            except OSError as exc:
+                self.output_queue.put(f"Impossible de lancer ffmpeg: {exc}\n")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _resolve_last_downloaded_audio_path(self) -> Path | None:
+        if self.last_downloaded_path:
+            candidate = self.last_downloaded_path
+            if not candidate.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    candidate = Path(root_raw).expanduser() / candidate
+                else:
+                    candidate = Path.cwd() / candidate
+            if candidate.exists():
+                return candidate
+
+        root_raw = self.download_dir_entry.get().strip()
+        if not root_raw:
+            return None
+        root = Path(root_raw).expanduser()
+        if not root.exists():
+            return None
+
+        audio_exts = {".ogg", ".m4a", ".mp3", ".flac", ".opus", ".aac", ".wav"}
+        candidates = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in audio_exts]
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+
+    def _extract_download_metadata(self, msg: str) -> None:
+        downloaded_match = re.search(r'DOWNLOADED:\s*"([^"]+)"', msg)
+        if downloaded_match:
+            raw_path = downloaded_match.group(1).strip()
+            parsed = Path(raw_path).expanduser()
+            if not parsed.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    parsed = Path(root_raw).expanduser() / parsed
+            self.last_downloaded_path = parsed
+
+        patterns = {
+            "title": r"Track Name ==\s*(.+)",
+            "artist": r"Artist Name ==\s*(.+)",
+            "album": r"Album Name ==\s*(.+)",
+        }
+        for key, pattern in patterns.items():
+            match = re.search(pattern, msg)
+            if match:
+                self.last_download_metadata[key] = match.group(1).strip()
+
     def _browse_file(self) -> None:
         selected = filedialog.askopenfilename(
             title="Choisir un fichier",
@@ -574,6 +665,18 @@ class ZotifyGUI(ctk.CTk):
         elif mode == "Verifier librairie":
             args.append("--verify-library")
 
+        download_modes = {
+            "URL(s)",
+            "Fichier URLs",
+            "Recherche",
+            "Liked Songs",
+            "Playlists utilisateur",
+            "Artistes suivis",
+            "Albums suivis",
+        }
+        if mode in download_modes:
+            args.extend(["--codec", "ogg"])
+
         return args
 
     def run_command(self) -> None:
@@ -581,6 +684,11 @@ class ZotifyGUI(ctk.CTk):
             self._append_console("Un telechargement est deja en cours.\n")
             return
 
+        self.current_action = "download"
+        self.current_mode = self.mode_var.get()
+        self.last_process_exit_code = None
+        self.last_downloaded_path = None
+        self.last_download_metadata = {}
         command = self._build_cli_args()
         self._start_subprocess(command, "Execution en cours...")
 
@@ -603,6 +711,8 @@ class ZotifyGUI(ctk.CTk):
         self.oauth_url_opened = False
         self.login_flow_active = True
         self.login_success_detected = False
+        self.current_action = "login"
+        self.last_process_exit_code = None
         command = self._build_base_cli_args() + ["--login-only"]
         self._start_subprocess(command, "Connexion Spotify...")
 
@@ -610,6 +720,8 @@ class ZotifyGUI(ctk.CTk):
         if self.current_process is not None:
             self._append_console("Action impossible: un processus est deja en cours.\n")
             return
+        self.current_action = "logout"
+        self.last_process_exit_code = None
         command = self._build_base_cli_args() + ["--logout"]
         self._start_subprocess(command, "Deconnexion Spotify...")
 
@@ -673,7 +785,21 @@ class ZotifyGUI(ctk.CTk):
                                 self.login_success_detected = True
                             self._show_login_success_popup()
                             self.show_page("Accueil")
+                    should_auto_convert_to_wav = (
+                        self.current_action == "download"
+                        and self.last_process_exit_code == 0
+                        and self.current_mode != "Verifier librairie"
+                    )
+                    if should_auto_convert_to_wav:
+                        self._append_console("Telechargement termine. Conversion automatique en WAV...\n")
+                        self._convert_last_download_to_wav(delete_source_after_success=False)
+                    self.current_action = "idle"
+                    self.current_mode = ""
                 else:
+                    self._extract_download_metadata(msg)
+                    exit_match = re.search(r"Processus termine \(code\s+(-?\d+)\)", msg)
+                    if exit_match:
+                        self.last_process_exit_code = int(exit_match.group(1))
                     maybe_url = self._try_extract_login_url(msg)
                     if maybe_url and self.pending_oauth_url != maybe_url:
                         self.pending_oauth_url = maybe_url
