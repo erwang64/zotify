@@ -31,7 +31,12 @@ DEPRECIATED_FLAGS = (
 
 
 def main():
-    if "--gui" in sys.argv:
+    is_frozen_exe = getattr(sys, "frozen", False)
+    has_extra_args = len(sys.argv) > 1
+
+    # In packaged .exe mode, a plain double-click passes no args.
+    # Default to GUI in that case, while still allowing CLI args for subprocess calls.
+    if "--gui" in sys.argv or (is_frozen_exe and not has_extra_args):
         try:
             from zotify.gui import launch_gui
         except ModuleNotFoundError as e:

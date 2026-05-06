@@ -30,6 +30,7 @@ from tkinter import filedialog, Menu
 
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
+GUI_VERSION: Final[str] = "1.0.0"
 
 
 class ZotifyGUI(ctk.CTk):
@@ -75,7 +76,7 @@ class ZotifyGUI(ctk.CTk):
         nav.grid_propagate(False)
         nav.grid_columnconfigure(0, weight=1)
 
-        logo_path = Path(__file__).resolve().parents[1] / "logo" / "logo.png"
+        logo_path = self._resolve_resource_path("logo", "logo.png")
         if logo_path.exists():
             pil_img = Image.open(logo_path)
             self.logo_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(160, 52))
@@ -112,6 +113,14 @@ class ZotifyGUI(ctk.CTk):
                                              text_color="#FFFFFF", hover_color="#282828", corner_radius=20, height=32,
                                              font=ctk.CTkFont(weight="bold"))
         self.nav_auth_button.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+        version_label = ctk.CTkLabel(
+            nav,
+            text=f"Version {GUI_VERSION}",
+            text_color="#7A7A7A",
+            font=ctk.CTkFont(size=12),
+        )
+        version_label.grid(row=6, column=0, padx=16, pady=(0, 14), sticky="w")
 
         self._sync_nav_style()
 
@@ -774,7 +783,11 @@ class ZotifyGUI(ctk.CTk):
             entry.insert(0, selected)
 
     def _build_base_cli_args(self) -> list[str]:
-        args = [sys.executable, "-u", "-m", "zotify"]
+        if getattr(sys, "frozen", False):
+            # En mode executable, on relance l'exe lui-meme sans --gui.
+            args = [sys.executable]
+        else:
+            args = [sys.executable, "-u", "-m", "zotify"]
         config_path = self.default_config_entry.get().strip()
         username = self.username_entry.get().strip()
         token = self.token_entry.get().strip()
@@ -803,6 +816,10 @@ class ZotifyGUI(ctk.CTk):
         if client_id:
             args.extend(["--client-id", client_id])
         return args
+
+    def _resolve_resource_path(self, *parts: str) -> Path:
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+        return base.joinpath(*parts)
 
     def _resolve_credentials_path(self) -> Path:
         """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.

@@ -174,6 +174,11 @@ class Printer:
         finally: Printer.ACTIVE_LOADER.resume()
     
     @staticmethod
+    def _safe_output_stream():
+        stream = getattr(sys, "stdout", None) or getattr(sys, "__stdout__", None)
+        return stream
+
+    @staticmethod
     def new_print(channel: PrintChannel, msg: str, category: PrintCategory = PrintCategory.NONE, 
                   end: str = "\n") -> None:
         Printer.logger(msg, channel)
@@ -183,12 +188,20 @@ class Printer:
                 return
         if channel == PrintChannel.MANDATORY or Zotify.CONFIG.get(channel.value):
             msg, category = Printer._prefixes(msg, category, channel)
+            out_stream = Printer._safe_output_stream()
             with Printer.pause_loader(category in {PrintCategory.LOADER, PrintCategory.LOADER_CYCLE}):
                 for line in str(msg).splitlines():
                     if end == "\n":
-                        tqdm.write(line.ljust(Printer._term_cols()))
+                        try:
+                            tqdm.write(line.ljust(Printer._term_cols()), file=out_stream)
+                        except AttributeError:
+                            # Some windowed environments expose no writable stdout.
+                            pass
                     else:
-                        tqdm.write(line, end=end)
+                        try:
+                            tqdm.write(line, file=out_stream, end=end)
+                        except AttributeError:
+                            pass
                     Printer.LAST_PRINT = category
     
     @staticmethod
@@ -364,7 +377,8 @@ class Loader:
 
     @staticmethod
     def _supports_unicode_loader() -> bool:
-        encoding = (sys.stdout.encoding or "").lower()
+        stream = Printer._safe_output_stream()
+        encoding = (getattr(stream, "encoding", "") or "").lower()
         if not encoding:
             return False
         try:
