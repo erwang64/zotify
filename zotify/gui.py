@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Final
@@ -59,8 +60,16 @@ class ZotifyGUI(ctk.CTk):
         self.current_mode = ""
         self.last_process_exit_code: int | None = None
         self.last_downloaded_path: Path | None = None
+        self.all_downloaded_paths: list[Path] = []
         self.last_download_metadata: dict[str, str] = {}
+        self.batch_convert_stats: dict[str, int] = {"total": 0, "converted": 0, "failed": 0}
         self.current_cover_image: ctk.CTkImage | None = None
+        self.dl_progress_current: int = 0
+        self.dl_progress_total: int = 0
+        self.failed_tracks: list[tuple[str, str]] = []
+        self.conv_progress_current: int = 0
+        self.conv_progress_total: int = 0
+        self._batch_convert_lock = threading.Lock()
 
         self.configure(fg_color="#121212")
         self.grid_columnconfigure(1, weight=1)
@@ -245,8 +254,11 @@ class ZotifyGUI(ctk.CTk):
         self.anim_canvas = ctk.CTkCanvas(self.success_header, width=100, height=100, bg="#181818", highlightthickness=0)
         self.anim_canvas.grid(row=0, column=0, pady=(0, 20))
         
-        self.success_title = ctk.CTkLabel(self.success_header, text="Téléchargement & Conversion Terminés", font=ctk.CTkFont(size=24, weight="bold"), text_color="#1DB954")
+        self.success_title = ctk.CTkLabel(self.success_header, text="Téléchargement \u0026 Conversion Terminés", font=ctk.CTkFont(size=24, weight="bold"), text_color="#1DB954")
         self.success_title.grid(row=1, column=0)
+
+        self.success_subtitle = ctk.CTkLabel(self.success_header, text="", font=ctk.CTkFont(size=14), text_color="#B3B3B3")
+        self.success_subtitle.grid(row=2, column=0, pady=(4, 0))
 
         self.track_info_frame = ctk.CTkFrame(self.success_card, fg_color="#282828", corner_radius=8)
         self.track_info_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
@@ -266,8 +278,31 @@ class ZotifyGUI(ctk.CTk):
         self.success_track_album = ctk.CTkLabel(info_inner, text="Album", font=ctk.CTkFont(size=14), text_color="#B3B3B3", anchor="w", justify="left")
         self.success_track_album.pack(anchor="w")
 
+        self.failed_frame = ctk.CTkFrame(self.success_card, fg_color="#2A1F1F", corner_radius=8, border_width=1, border_color="#E22134")
+        self.failed_frame.grid(row=2, column=0, padx=40, pady=(0, 10), sticky="ew")
+        self.failed_frame.grid_columnconfigure(0, weight=1)
+        self.failed_header = ctk.CTkLabel(
+            self.failed_frame,
+            text="",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#FF6B6B",
+            anchor="w",
+            justify="left",
+        )
+        self.failed_header.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        self.failed_list_label = ctk.CTkLabel(
+            self.failed_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="#E8B4B4",
+            anchor="w",
+            justify="left",
+        )
+        self.failed_list_label.grid(row=1, column=0, padx=14, pady=(0, 10), sticky="ew")
+        self.failed_frame.grid_remove()
+
         buttons_frame = ctk.CTkFrame(self.success_card, fg_color="transparent")
-        buttons_frame.grid(row=2, column=0, pady=(0, 40))
+        buttons_frame.grid(row=3, column=0, pady=(0, 40))
 
         self.open_folder_btn = ctk.CTkButton(buttons_frame, text="Ouvrir le dossier", command=self._open_download_folder, fg_color="transparent", border_width=1, border_color="#B3B3B3", text_color="#FFFFFF", hover_color="#3E3E3E", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
         self.open_folder_btn.grid(row=0, column=0, padx=10)
@@ -325,29 +360,74 @@ class ZotifyGUI(ctk.CTk):
     def _animate_success_page(self) -> None:
         self.anim_canvas.delete("all")
         
-        title = self.last_download_metadata.get("title", "Titre Inconnu")
-        artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
-        album = self.last_download_metadata.get("album", "Album Inconnu")
+        is_batch = self.batch_convert_stats["total"] > 1
+        n_dl_failed = len(self.failed_tracks)
         
-        self.success_track_title.configure(text=title)
-        self.success_track_artist.configure(text=artist)
-        self.success_track_album.configure(text=album)
+        if is_batch:
+            n_total = self.batch_convert_stats["total"]
+            n_ok = self.batch_convert_stats["converted"]
+            n_fail = self.batch_convert_stats["failed"]
+            self.success_title.configure(text="Playlist Téléchargée \u0026 Convertie")
+            subtitle_parts = [f"{n_ok}/{n_total} morceaux convertis en WAV"]
+            if n_fail > 0:
+                subtitle_parts.append(f"({n_fail} échec{'s' if n_fail > 1 else ''} ffmpeg)")
+            if n_dl_failed > 0:
+                subtitle_parts.append(f"- {n_dl_failed} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify")
+            self.success_subtitle.configure(text=" ".join(subtitle_parts))
+            self.success_track_title.configure(text=self.last_download_metadata.get("title", f"{n_total} morceaux"))
+            self.success_track_artist.configure(text=self.last_download_metadata.get("artist", ""))
+            self.success_track_album.configure(text=self.last_download_metadata.get("album", ""))
+        else:
+            self.success_title.configure(text="Téléchargement \u0026 Conversion Terminés")
+            if n_dl_failed > 0:
+                self.success_subtitle.configure(
+                    text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify"
+                )
+            else:
+                self.success_subtitle.configure(text="")
+            title = self.last_download_metadata.get("title", "Titre Inconnu")
+            artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
+            album = self.last_download_metadata.get("album", "Album Inconnu")
+            self.success_track_title.configure(text=title)
+            self.success_track_artist.configure(text=artist)
+            self.success_track_album.configure(text=album)
+        
+        if n_dl_failed > 0:
+            self.failed_header.configure(
+                text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} non disponible{'s' if n_dl_failed > 1 else ''} sur Spotify :"
+            )
+            max_visible = 5
+            visible = self.failed_tracks[:max_visible]
+            lines = [f"  • {name}" for name, _uri in visible]
+            remaining = n_dl_failed - len(visible)
+            if remaining > 0:
+                lines.append(f"  ... et {remaining} autre{'s' if remaining > 1 else ''}")
+            self.failed_list_label.configure(text="\n".join(lines))
+            self.failed_frame.grid()
+        else:
+            self.failed_frame.grid_remove()
+        
         self.current_cover_image = None
         self.cover_label.configure(image=None, text="Pas de pochette")
         
+        # Try to extract cover art from the last downloaded file
+        cover_source = None
         if self.last_downloaded_path and MUTAGEN_AVAILABLE:
-            ogg_path = self.last_downloaded_path.with_suffix(".ogg")
-            if not ogg_path.exists():
-                ogg_path = self.last_downloaded_path
-                
-            if ogg_path.exists() and ogg_path.suffix.lower() == ".ogg":
-                try:
-                    pil_img = self._extract_cover_from_ogg(ogg_path)
-                    if pil_img is not None:
-                        self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
-                        self.cover_label.configure(image=self.current_cover_image, text="")
-                except Exception as e:
-                    self._append_console(f"Erreur extraction pochette: {e}\n")
+            # Try .ogg first (original before conversion), then .wav, then the path itself
+            for suffix in [".ogg", ".wav", self.last_downloaded_path.suffix]:
+                candidate = self.last_downloaded_path.with_suffix(suffix)
+                if candidate.exists() and candidate.suffix.lower() == ".ogg":
+                    cover_source = candidate
+                    break
+        
+        if cover_source:
+            try:
+                pil_img = self._extract_cover_from_ogg(cover_source)
+                if pil_img is not None:
+                    self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
+                    self.cover_label.configure(image=self.current_cover_image, text="")
+            except Exception as e:
+                self._append_console(f"Erreur extraction pochette: {e}\n")
 
         self._anim_angle = 0
         self._anim_check_progress = 0
@@ -536,14 +616,17 @@ class ZotifyGUI(ctk.CTk):
         self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 4), sticky="w")
 
         self.progress = ctk.CTkProgressBar(actions_frame, mode="indeterminate", progress_color="#1DB954", fg_color="#3E3E3E")
-        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 12), sticky="ew")
+        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 4), sticky="ew")
         self.progress.set(0)
 
+        self.progress_counter = ctk.CTkLabel(actions_frame, text="", text_color="#B3B3B3", font=ctk.CTkFont(size=12))
+        self.progress_counter.grid(row=2, column=0, columnspan=2, pady=(0, 8), sticky="w")
+
         self.run_button = ctk.CTkButton(actions_frame, text="Lancer", command=self.run_command, fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
-        self.run_button.grid(row=2, column=0, padx=(0, 4), sticky="ew")
+        self.run_button.grid(row=3, column=0, padx=(0, 4), sticky="ew")
         
         self.stop_button = ctk.CTkButton(actions_frame, text="Arrêter", command=self.stop_command, fg_color="transparent", text_color="#FFFFFF", hover_color="#282828", border_width=1, border_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
-        self.stop_button.grid(row=2, column=1, padx=(4, 0), sticky="ew")
+        self.stop_button.grid(row=3, column=1, padx=(4, 0), sticky="ew")
         self.stop_button.configure(state="disabled")
 
         self._update_mode_hint()
@@ -683,10 +766,26 @@ class ZotifyGUI(ctk.CTk):
         dst = src.with_suffix(".wav")
         self._append_console(f"Conversion en WAV en cours: {src.name} -> {dst.name}\n")
 
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
         def worker() -> None:
-            cmd = ["ffmpeg", "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst)]
+            cmd = [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst),
+            ]
             try:
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=600,
+                    creationflags=creationflags,
+                )
                 if proc.returncode == 0:
                     if delete_source_after_success and src.suffix.lower() == ".ogg":
                         try:
@@ -699,12 +798,219 @@ class ZotifyGUI(ctk.CTk):
                     self.output_queue.put("__ALL_DONE__")
                 else:
                     self.output_queue.put("Echec conversion WAV (voir details ffmpeg ci-dessous).\n")
-                    if proc.stdout:
-                        self.output_queue.put(proc.stdout + "\n")
+                    if proc.stderr:
+                        self.output_queue.put(proc.stderr + "\n")
+                    self.output_queue.put("__ALL_DONE__")
+            except subprocess.TimeoutExpired:
+                self.output_queue.put("Echec conversion WAV: timeout depasse (10 min).\n")
+                self.output_queue.put("__ALL_DONE__")
             except OSError as exc:
                 self.output_queue.put(f"Impossible de lancer ffmpeg: {exc}\n")
+                self.output_queue.put("__ALL_DONE__")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _batch_convert_to_wav(self) -> None:
+        """Convert ALL convertible audio files to WAV after a batch/playlist download.
+
+        Strategy:
+          1. Sweep the playlist destination folder(s) recursively for every audio file
+             whose .wav sibling does not already exist (catches files from previous
+             runs too, in addition to the current session).
+          2. Convert in parallel using a ThreadPoolExecutor (4 workers by default).
+          3. Emit a ZOTIFY_CONV_PROGRESS line after every completion so the GUI
+             updates its live progress bar.
+          4. Delete the source .ogg after a successful conversion.
+          5. Emit __ALL_DONE__ only after every conversion has finished.
+        """
+        if shutil.which("ffmpeg") is None:
+            self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
+            self._append_console("Conversion WAV annulee pour tous les fichiers.\n")
+            self.output_queue.put("__ALL_DONE__")
+            return
+
+        files_to_convert = self._collect_files_to_convert()
+
+        if not files_to_convert:
+            self._append_console("Aucun fichier audio a convertir en WAV.\n")
+            self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
+            self.output_queue.put("__ALL_DONE__")
+            return
+
+        n_total = len(files_to_convert)
+        # Slightly conservative parallelism: 4 ffmpeg in parallel is enough,
+        # going higher just thrashes disk/CPU without speed gain.
+        max_workers = min(4, max(1, (os.cpu_count() or 4) // 2 + 1))
+        self._append_console(f"\n{'='*50}\n")
+        self._append_console(
+            f"  Conversion WAV : {n_total} fichier{'s' if n_total > 1 else ''} a convertir "
+            f"({max_workers} workers en parallele, timeout 10 min/fichier)\n"
+        )
+        self._append_console(f"{'='*50}\n\n")
+        self.batch_convert_stats = {"total": n_total, "converted": 0, "failed": 0}
+        self.conv_progress_current = 0
+        self.conv_progress_total = n_total
+
+        # Per-file ffmpeg timeout. Catches genuine ffmpeg hangs (corrupt file,
+        # unexpected prompt, driver lock) instead of letting the whole batch stall.
+        ffmpeg_timeout_s = 600
+
+        # Windows: avoid spawning an ephemeral cmd.exe window for every ffmpeg call.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        def convert_one(src: Path) -> tuple[Path, bool, str]:
+            """Run ffmpeg for a single file. Returns (src, ok, error_excerpt).
+
+            Critical flags to avoid hangs in parallel subprocess scenarios:
+              -nostdin       : tells ffmpeg NEVER to read from stdin (otherwise
+                               4 parallel ffmpeg processes can deadlock on a
+                               shared/closed stdin on Windows).
+              -hide_banner   : trim verbose output.
+              -loglevel error: suppress info/warning chatter we never display.
+              stdin=DEVNULL  : extra safety so ffmpeg can't ever block on stdin.
+              stdout=DEVNULL : we don't need progress chatter from ffmpeg.
+              stderr=PIPE    : keep error tail for diagnosis if it fails.
+              timeout=10min  : prevents a single bad file from halting the batch.
+            """
+            dst = src.with_suffix(".wav")
+            cmd = [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst),
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=ffmpeg_timeout_s,
+                    creationflags=creationflags,
+                )
+                if proc.returncode == 0:
+                    if src.suffix.lower() == ".ogg":
+                        try:
+                            src.unlink()
+                        except OSError:
+                            pass
+                    return (src, True, "")
+                tail = ""
+                if proc.stderr:
+                    tail = "\n".join(proc.stderr.strip().splitlines()[-3:])
+                return (src, False, tail)
+            except subprocess.TimeoutExpired:
+                # Clean up the half-written .wav so a retry later actually retries
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                except OSError:
+                    pass
+                return (src, False, f"Timeout apres {ffmpeg_timeout_s}s")
+            except OSError as exc:
+                return (src, False, f"Erreur ffmpeg: {exc}")
+
+        def supervisor() -> None:
+            converted = 0
+            failed = 0
+            done = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                # Submit ALL jobs; queue submission immediately so workers
+                # are saturated from the start.
+                futures = {pool.submit(convert_one, src): src for src in files_to_convert}
+                # Announce which files are queued up - useful so the user
+                # sees activity even before the first conversion completes.
+                self.output_queue.put(
+                    f"  {len(futures)} fichier(s) en file, {max_workers} en cours en parallele...\n"
+                )
+                for future in as_completed(futures):
+                    src, ok, err = future.result()
+                    done += 1
+                    with self._batch_convert_lock:
+                        if ok:
+                            converted += 1
+                            self.batch_convert_stats["converted"] = converted
+                            self.output_queue.put(f"  [{done}/{n_total}] OK  {src.name}\n")
+                        else:
+                            failed += 1
+                            self.batch_convert_stats["failed"] = failed
+                            self.output_queue.put(f"  [{done}/{n_total}] !!! ECHEC {src.name}\n")
+                            if err:
+                                for line in err.splitlines():
+                                    self.output_queue.put(f"      {line}\n")
+                    # Live progress signal for the GUI progress bar
+                    self.output_queue.put(f"ZOTIFY_CONV_PROGRESS: {done}/{n_total}\n")
+
+            self.batch_convert_stats = {"total": n_total, "converted": converted, "failed": failed}
+            self.output_queue.put(f"\n{'='*50}\n")
+            self.output_queue.put(f"  Conversion terminee: {converted}/{n_total} reussi{'s' if converted > 1 else ''}")
+            if failed > 0:
+                self.output_queue.put(f" ({failed} echec{'s' if failed > 1 else ''})")
+            self.output_queue.put(f"\n{'='*50}\n\n")
+            self.output_queue.put("__ALL_DONE__")
+
+        threading.Thread(target=supervisor, daemon=True).start()
+
+    def _collect_files_to_convert(self) -> list[Path]:
+        """Build the comprehensive list of .ogg/etc files that still need a .wav sibling.
+
+        Sources merged:
+          - Paths captured during this session via ZOTIFY_DL_COMPLETE.
+          - Recursive sweep of each parent folder of those captured paths.
+          - Fallback recursive sweep of the configured download_dir if nothing
+            was captured this session.
+
+        Files already converted (.wav sibling exists with non-zero size) are
+        skipped, so we never re-do work and we never leave anything behind.
+        """
+        audio_exts = {".ogg", ".m4a", ".mp3", ".flac", ".opus", ".aac"}
+        candidates: set[Path] = set()
+        sweep_roots: set[Path] = set()
+
+        for p in self.all_downloaded_paths:
+            if not isinstance(p, Path):
+                continue
+            resolved = p.expanduser()
+            if not resolved.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    resolved = Path(root_raw).expanduser() / resolved
+                else:
+                    resolved = Path.cwd() / resolved
+            if resolved.exists() and resolved.is_file() and resolved.suffix.lower() in audio_exts:
+                candidates.add(resolved)
+            if resolved.parent.exists() and resolved.parent.is_dir():
+                sweep_roots.add(resolved.parent)
+
+        if not sweep_roots:
+            root_raw = self.download_dir_entry.get().strip()
+            if root_raw:
+                root = Path(root_raw).expanduser()
+                if root.exists() and root.is_dir():
+                    sweep_roots.add(root)
+
+        for root in sweep_roots:
+            try:
+                for path in root.rglob("*"):
+                    if path.is_file() and path.suffix.lower() in audio_exts:
+                        candidates.add(path)
+            except OSError:
+                continue
+
+        files_to_convert: list[Path] = []
+        for src in candidates:
+            dst = src.with_suffix(".wav")
+            try:
+                if dst.exists() and dst.is_file() and dst.stat().st_size > 0:
+                    continue
+            except OSError:
+                pass
+            files_to_convert.append(src)
+
+        files_to_convert.sort(key=lambda p: str(p).lower())
+        return files_to_convert
 
     def _resolve_last_downloaded_audio_path(self) -> Path | None:
         if self.last_downloaded_path:
@@ -733,6 +1039,36 @@ class ZotifyGUI(ctk.CTk):
         return max(candidates, key=lambda p: p.stat().st_mtime)
 
     def _extract_download_metadata(self, msg: str) -> None:
+        # Capture explicit final-failure signal (MANDATORY) emitted by api.py after retries
+        dl_failed_match = re.search(r'ZOTIFY_DL_FAILED:\s*"([^"]+)"\s*\(([^)]+)\)', msg)
+        if dl_failed_match:
+            name = dl_failed_match.group(1).strip()
+            uri = dl_failed_match.group(2).strip()
+            if (name, uri) not in self.failed_tracks:
+                self.failed_tracks.append((name, uri))
+
+        # Capture conversion progress signal (emitted from the batch worker thread itself)
+        conv_match = re.search(r'ZOTIFY_CONV_PROGRESS:\s*(\d+)/(\d+)', msg)
+        if conv_match:
+            self.conv_progress_current = int(conv_match.group(1))
+            self.conv_progress_total = int(conv_match.group(2))
+            self._update_conv_progress()
+
+        # Capture download paths from the ZOTIFY_DL_COMPLETE signal (MANDATORY channel, always visible)
+        dl_complete_match = re.search(r'ZOTIFY_DL_COMPLETE:\s*"([^"]+)"', msg)
+        if dl_complete_match:
+            raw_path = dl_complete_match.group(1).strip()
+            parsed = Path(raw_path).expanduser()
+            if not parsed.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    parsed = Path(root_raw).expanduser() / parsed
+            self.last_downloaded_path = parsed
+            # Accumulate all downloaded paths for batch conversion
+            if parsed not in self.all_downloaded_paths:
+                self.all_downloaded_paths.append(parsed)
+
+        # Also try the old format (for non-standard-interface mode)
         downloaded_match = re.search(r'(?:DOWNLOADED|SKIPPING):\s*"([^"]+)"', msg)
         if downloaded_match:
             raw_path = downloaded_match.group(1).strip()
@@ -742,6 +1078,15 @@ class ZotifyGUI(ctk.CTk):
                 if root_raw:
                     parsed = Path(root_raw).expanduser() / parsed
             self.last_downloaded_path = parsed
+            if parsed not in self.all_downloaded_paths:
+                self.all_downloaded_paths.append(parsed)
+
+        # Capture progress updates from ZOTIFY_PROGRESS signal
+        progress_match = re.search(r'ZOTIFY_PROGRESS:\s*(\d+)/(\d+)', msg)
+        if progress_match:
+            self.dl_progress_current = int(progress_match.group(1))
+            self.dl_progress_total = int(progress_match.group(2))
+            self._update_download_progress()
 
         patterns = {
             "title": r"Track Name ==\s*(.+)",
@@ -752,6 +1097,36 @@ class ZotifyGUI(ctk.CTk):
             match = re.search(pattern, msg)
             if match:
                 self.last_download_metadata[key] = match.group(1).strip()
+
+    def _update_download_progress(self) -> None:
+        """Update the progress bar and counter label with current download progress."""
+        if self.dl_progress_total > 0:
+            # Switch to determinate mode for real progress
+            self.progress.configure(mode="determinate")
+            fraction = self.dl_progress_current / self.dl_progress_total
+            self.progress.set(fraction)
+            self.progress_counter.configure(
+                text=f"{self.dl_progress_current}/{self.dl_progress_total} morceaux téléchargés"
+            )
+            if self.dl_progress_current > 0:
+                self.status_label.configure(
+                    text=f"Téléchargement en cours ({self.dl_progress_current}/{self.dl_progress_total})",
+                    text_color="#1DB954"
+                )
+
+    def _update_conv_progress(self) -> None:
+        """Update the progress bar and counter label during WAV conversion."""
+        if self.conv_progress_total > 0:
+            self.progress.configure(mode="determinate")
+            fraction = self.conv_progress_current / self.conv_progress_total
+            self.progress.set(fraction)
+            self.progress_counter.configure(
+                text=f"{self.conv_progress_current}/{self.conv_progress_total} fichiers convertis en WAV"
+            )
+            self.status_label.configure(
+                text=f"Conversion WAV ({self.conv_progress_current}/{self.conv_progress_total})",
+                text_color="#1DB954",
+            )
 
     def _browse_file(self) -> None:
         selected = filedialog.askopenfilename(
@@ -985,7 +1360,17 @@ class ZotifyGUI(ctk.CTk):
         self.current_mode = self.mode_var.get()
         self.last_process_exit_code = None
         self.last_downloaded_path = None
+        self.all_downloaded_paths = []
         self.last_download_metadata = {}
+        self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
+        self.dl_progress_current = 0
+        self.dl_progress_total = 0
+        self.conv_progress_current = 0
+        self.conv_progress_total = 0
+        self.failed_tracks = []
+        self.progress.configure(mode="indeterminate")
+        self.progress.set(0)
+        self.progress_counter.configure(text="")
         command = self._build_cli_args()
         self._start_subprocess(command, "Execution en cours...")
 
@@ -1093,8 +1478,31 @@ class ZotifyGUI(ctk.CTk):
                         and self.current_mode != "Verifier librairie"
                     )
                     if should_auto_convert_to_wav:
-                        self._append_console("Telechargement termine. Conversion automatique en WAV...\n")
-                        self._convert_last_download_to_wav(delete_source_after_success=False)
+                        # Keep the UI in "busy" state during conversion so the user
+                        # cannot launch a second download mid-conversion and the
+                        # progress bar/status stay informative.
+                        self.run_button.configure(state="disabled")
+                        self.progress.configure(mode="determinate")
+                        self.progress.set(0)
+                        self.status_label.configure(
+                            text="Preparation de la conversion WAV...",
+                            text_color="#1DB954",
+                        )
+                        n_files = len(self.all_downloaded_paths)
+                        if n_files >= 1:
+                            self._append_console(
+                                f"Telechargement termine ({n_files} fichier{'s' if n_files > 1 else ''}). "
+                                "Conversion WAV (sweep complet du dossier)...\n"
+                            )
+                            self._batch_convert_to_wav()
+                        else:
+                            # No downloads captured this session, but the user might still have
+                            # leftover .ogg files in the configured dir from a previous run.
+                            self._append_console(
+                                "Aucun fichier capture dans la session. Sweep du dossier de "
+                                "telechargement pour rattraper les .ogg orphelins...\n"
+                            )
+                            self._batch_convert_to_wav()
                     elif self.current_action == "download" and self.last_process_exit_code == 0:
                         self.show_page("Success")
                         self.current_action = "idle"
@@ -1133,6 +1541,11 @@ class ZotifyGUI(ctk.CTk):
                         or stripped_msg.startswith("[\u25cf")
                     )
                     if noisy_login_line:
+                        continue
+                    # Filter internal GUI<->CLI signals (already parsed above) so they
+                    # do not pollute the user-facing console output.
+                    if stripped_msg.startswith(("ZOTIFY_PROGRESS:", "ZOTIFY_DL_COMPLETE:",
+                                                "ZOTIFY_DL_FAILED:", "ZOTIFY_CONV_PROGRESS:")):
                         continue
                     if msg == self.last_console_line:
                         continue
