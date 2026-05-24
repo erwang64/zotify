@@ -32,6 +32,13 @@ from tkinter import filedialog, Menu
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
 GUI_VERSION: Final[str] = "1.0.0"
+# Clés config.json obsolètes (ignorées par Zotify, génèrent des avertissements au lancement).
+GUI_DEPRECATED_CONFIG_KEYS: Final[tuple[str, ...]] = (
+    "SONG_ARCHIVE",
+    "DOWNLOAD_LYRICS",
+    "OVERRIDE_AUTO_WAIT",
+    "DOWNLOAD_REAL_TIME",
+)
 
 
 class ZotifyGUI(ctk.CTk):
@@ -196,7 +203,11 @@ class ZotifyGUI(ctk.CTk):
         title = ctk.CTkLabel(card, text="Paramètres", font=ctk.CTkFont(size=32, weight="bold"), text_color="#FFFFFF")
         title.grid(row=0, column=0, padx=32, pady=(32, 8), sticky="w")
         
-        subtitle = ctk.CTkLabel(card, text="Configure les dossiers, le client API et l'authentification.", text_color="#B3B3B3")
+        subtitle = ctk.CTkLabel(
+            card,
+            text="Configure les dossiers, le client API, l'authentification et le format de conversion.",
+            text_color="#B3B3B3",
+        )
         subtitle.grid(row=1, column=0, padx=32, pady=(0, 32), sticky="w")
 
         row_idx = 2
@@ -225,6 +236,110 @@ class ZotifyGUI(ctk.CTk):
 
         self.client_id_entry = add_entry("Client ID API Spotify", "Laisser vide pour le client interne")
         self.client_id_entry.insert(0, self.gui_settings.get("api_client_id", ""))
+
+        saved_fmt = str(self.gui_settings.get("conversion_format", "wav")).strip().lower()
+        ctk.CTkLabel(
+            card,
+            text="Format de conversion",
+            font=ctk.CTkFont(weight="bold", size=14),
+            text_color="#FFFFFF",
+        ).grid(row=row_idx, column=0, padx=32, pady=(16, 8), sticky="w")
+        row_idx += 1
+        self.conversion_format_var = ctk.StringVar(value="MP3" if saved_fmt == "mp3" else "WAV")
+        self.conversion_format_menu = ctk.CTkOptionMenu(
+            card,
+            values=["WAV", "MP3"],
+            variable=self.conversion_format_var,
+            fg_color="#282828",
+            button_color="#3E3E3E",
+            button_hover_color="#535353",
+            dropdown_fg_color="#282828",
+            height=40,
+            width=200,
+        )
+        self.conversion_format_menu.grid(row=row_idx, column=0, padx=32, pady=(0, 4), sticky="w")
+        row_idx += 1
+        ctk.CTkLabel(
+            card,
+            text="WAV : sans perte (PCM 16 bits)  |  MP3 : 320 kbps (très haute qualité)",
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+        ).grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="w")
+        row_idx += 1
+
+        ctk.CTkLabel(
+            card,
+            text="Options obsolètes (config.json)",
+            font=ctk.CTkFont(weight="bold", size=14),
+            text_color="#FFFFFF",
+        ).grid(row=row_idx, column=0, padx=32, pady=(16, 8), sticky="w")
+        row_idx += 1
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Ces entrées sont ignorées par Zotify et provoquent des avertissements. "
+                "Coche celles à retirer du config.json, puis sauvegarde ou clique sur Nettoyer."
+            ),
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+            justify="left",
+            wraplength=700,
+        ).grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="w")
+        row_idx += 1
+
+        present_deprecated = self._find_deprecated_keys_in_config()
+        saved_cleanup = self.gui_settings.get("deprecated_cleanup", {})
+        if not isinstance(saved_cleanup, dict):
+            saved_cleanup = {}
+        deprec_cb_kwargs = {
+            "border_color": "#535353",
+            "hover_color": "#1ED760",
+            "checkmark_color": "#000000",
+            "font": ctk.CTkFont(size=13),
+        }
+        self.deprec_key_vars: dict[str, ctk.BooleanVar] = {}
+        self.deprec_key_labels: dict[str, ctk.CTkLabel] = {}
+        for key in GUI_DEPRECATED_CONFIG_KEYS:
+            if key in saved_cleanup:
+                default_checked = bool(saved_cleanup[key])
+            else:
+                default_checked = key in present_deprecated
+            var = ctk.BooleanVar(value=default_checked)
+            self.deprec_key_vars[key] = var
+            row_frame = ctk.CTkFrame(card, fg_color="transparent")
+            row_frame.grid(row=row_idx, column=0, padx=32, pady=2, sticky="w")
+            row_idx += 1
+            ctk.CTkCheckBox(
+                row_frame,
+                text=f"Supprimer « {key} »",
+                variable=var,
+                **deprec_cb_kwargs,
+            ).grid(row=0, column=0, sticky="w")
+            status = "présente" if key in present_deprecated else "absente"
+            status_color = "#E8A838" if key in present_deprecated else "#6B6B6B"
+            status_lbl = ctk.CTkLabel(
+                row_frame,
+                text=f"({status} dans config.json)",
+                text_color=status_color,
+                font=ctk.CTkFont(size=11),
+            )
+            status_lbl.grid(row=0, column=1, padx=(12, 0), sticky="w")
+            self.deprec_key_labels[key] = status_lbl
+
+        cleanup_btn = ctk.CTkButton(
+            card,
+            text="Nettoyer le config.json",
+            command=self._apply_deprecated_config_cleanup,
+            fg_color="transparent",
+            hover_color="#3E3E3E",
+            border_width=1,
+            border_color="#B3B3B3",
+            text_color="#FFFFFF",
+            height=36,
+            corner_radius=18,
+        )
+        cleanup_btn.grid(row=row_idx, column=0, padx=32, pady=(8, 8), sticky="w")
+        row_idx += 1
 
         self.settings_info = ctk.CTkLabel(card, text="", text_color="#B3B3B3")
         self.settings_info.grid(row=row_idx, column=0, padx=32, pady=(24, 8), sticky="w")
@@ -368,7 +483,7 @@ class ZotifyGUI(ctk.CTk):
             n_ok = self.batch_convert_stats["converted"]
             n_fail = self.batch_convert_stats["failed"]
             self.success_title.configure(text="Playlist Téléchargée \u0026 Convertie")
-            subtitle_parts = [f"{n_ok}/{n_total} morceaux convertis en WAV"]
+            subtitle_parts = [f"{n_ok}/{n_total} morceaux convertis en {self._conversion_label()}"]
             if n_fail > 0:
                 subtitle_parts.append(f"({n_fail} échec{'s' if n_fail > 1 else ''} ffmpeg)")
             if n_dl_failed > 0:
@@ -414,7 +529,7 @@ class ZotifyGUI(ctk.CTk):
         cover_source = None
         if self.last_downloaded_path and MUTAGEN_AVAILABLE:
             # Try .ogg first (original before conversion), then .wav, then the path itself
-            for suffix in [".ogg", ".wav", self.last_downloaded_path.suffix]:
+            for suffix in [".ogg", ".wav", ".mp3", self.last_downloaded_path.suffix]:
                 candidate = self.last_downloaded_path.with_suffix(suffix)
                 if candidate.exists() and candidate.suffix.lower() == ".ogg":
                     cover_source = candidate
@@ -569,27 +684,26 @@ class ZotifyGUI(ctk.CTk):
         title = ctk.CTkLabel(left_frame, text="Téléchargement", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFFFFF")
         title.grid(row=0, column=0, pady=(0, 16), sticky="w")
 
-        mode_label = ctk.CTkLabel(left_frame, text="Mode de recherche", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
-        mode_label.grid(row=1, column=0, pady=(0, 4), sticky="w")
-        
-        self.mode_var = ctk.StringVar(value="URL(s)")
-        self.mode_menu = ctk.CTkOptionMenu(
+        url_label = ctk.CTkLabel(left_frame, text="Titre / URL playlist", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
+        url_label.grid(row=1, column=0, pady=(0, 4), sticky="w")
+
+        self.input_hint = ctk.CTkLabel(
             left_frame,
-            values=["URL(s)", "Fichier URLs", "Recherche", "Liked Songs", "Playlists utilisateur", "Artistes suivis", "Albums suivis", "Verifier librairie"],
-            variable=self.mode_var,
-            command=lambda _value: self._update_mode_hint(),
-            fg_color="#282828", button_color="#3E3E3E", button_hover_color="#535353", dropdown_fg_color="#282828", height=36
+            text="Collez une ou plusieurs URL Spotify (morceau, album, playlist…), séparées par un espace",
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+            justify="left",
         )
-        self.mode_menu.grid(row=2, column=0, pady=(0, 4), sticky="ew")
+        self.input_hint.grid(row=2, column=0, pady=(0, 12), sticky="w")
 
-        self.input_hint = ctk.CTkLabel(left_frame, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12), justify="left")
-        self.input_hint.grid(row=3, column=0, pady=(0, 12), sticky="w")
-
-        self.query_entry = ctk.CTkEntry(left_frame, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
-        self.query_entry.grid(row=4, column=0, pady=(0, 8), sticky="ew")
-
-        browse_button = ctk.CTkButton(left_frame, text="Parcourir un fichier", command=self._browse_file, fg_color="transparent", hover_color="#3E3E3E", text_color="#FFFFFF", border_width=1, border_color="#B3B3B3", height=36)
-        browse_button.grid(row=5, column=0, sticky="w")
+        self.query_entry = ctk.CTkEntry(
+            left_frame,
+            placeholder_text="https://open.spotify.com/...",
+            fg_color="#282828",
+            border_width=0,
+            height=40,
+        )
+        self.query_entry.grid(row=3, column=0, pady=(0, 8), sticky="ew")
 
         # --- Right Column ---
         right_frame = ctk.CTkFrame(content, fg_color="transparent")
@@ -629,7 +743,6 @@ class ZotifyGUI(ctk.CTk):
         self.stop_button.grid(row=3, column=1, padx=(4, 0), sticky="ew")
         self.stop_button.configure(state="disabled")
 
-        self._update_mode_hint()
         self._refresh_auth_status()
 
     def _build_output_panel(self, parent: ctk.CTkFrame) -> None:
@@ -748,70 +861,8 @@ class ZotifyGUI(ctk.CTk):
 
         ctk.CTkButton(popup, text="OK", command=popup.destroy).pack(padx=20, pady=(0, 16), anchor="e")
 
-    def _convert_last_download_to_wav(self, delete_source_after_success: bool = True) -> None:
-        src = self._resolve_last_downloaded_audio_path()
-        if src is None or not src.exists():
-            self._append_console("Conversion WAV impossible: fichier source introuvable.\n")
-            self.output_queue.put("__ALL_DONE__")
-            return
-        if src.suffix.lower() == ".wav":
-            self._append_console("Le fichier est deja en WAV.\n")
-            self.output_queue.put("__ALL_DONE__")
-            return
-        if shutil.which("ffmpeg") is None:
-            self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
-            self.output_queue.put("__ALL_DONE__")
-            return
-
-        dst = src.with_suffix(".wav")
-        self._append_console(f"Conversion en WAV en cours: {src.name} -> {dst.name}\n")
-
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-        def worker() -> None:
-            cmd = [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst),
-            ]
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    timeout=600,
-                    creationflags=creationflags,
-                )
-                if proc.returncode == 0:
-                    if delete_source_after_success and src.suffix.lower() == ".ogg":
-                        try:
-                            src.unlink()
-                            self.output_queue.put(f"Conversion WAV reussie: {dst} (source .ogg supprimee)\n")
-                        except OSError as exc:
-                            self.output_queue.put(f"Conversion WAV reussie: {dst} (suppression .ogg impossible: {exc})\n")
-                    else:
-                        self.output_queue.put(f"Conversion WAV reussie: {dst}\n")
-                    self.output_queue.put("__ALL_DONE__")
-                else:
-                    self.output_queue.put("Echec conversion WAV (voir details ffmpeg ci-dessous).\n")
-                    if proc.stderr:
-                        self.output_queue.put(proc.stderr + "\n")
-                    self.output_queue.put("__ALL_DONE__")
-            except subprocess.TimeoutExpired:
-                self.output_queue.put("Echec conversion WAV: timeout depasse (10 min).\n")
-                self.output_queue.put("__ALL_DONE__")
-            except OSError as exc:
-                self.output_queue.put(f"Impossible de lancer ffmpeg: {exc}\n")
-                self.output_queue.put("__ALL_DONE__")
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _batch_convert_to_wav(self) -> None:
-        """Convert ALL convertible audio files to WAV after a batch/playlist download.
+    def _batch_convert(self) -> None:
+        """Convert ALL convertible audio files after a batch/playlist download.
 
         Strategy:
           1. Sweep the playlist destination folder(s) recursively for every audio file
@@ -823,16 +874,17 @@ class ZotifyGUI(ctk.CTk):
           4. Delete the source .ogg after a successful conversion.
           5. Emit __ALL_DONE__ only after every conversion has finished.
         """
+        fmt_label = self._conversion_label()
         if shutil.which("ffmpeg") is None:
             self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
-            self._append_console("Conversion WAV annulee pour tous les fichiers.\n")
+            self._append_console(f"Conversion {fmt_label} annulee pour tous les fichiers.\n")
             self.output_queue.put("__ALL_DONE__")
             return
 
         files_to_convert = self._collect_files_to_convert()
 
         if not files_to_convert:
-            self._append_console("Aucun fichier audio a convertir en WAV.\n")
+            self._append_console(f"Aucun fichier audio a convertir en {fmt_label}.\n")
             self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
             self.output_queue.put("__ALL_DONE__")
             return
@@ -843,7 +895,7 @@ class ZotifyGUI(ctk.CTk):
         max_workers = min(4, max(1, (os.cpu_count() or 4) // 2 + 1))
         self._append_console(f"\n{'='*50}\n")
         self._append_console(
-            f"  Conversion WAV : {n_total} fichier{'s' if n_total > 1 else ''} a convertir "
+            f"  Conversion {fmt_label} : {n_total} fichier{'s' if n_total > 1 else ''} a convertir "
             f"({max_workers} workers en parallele, timeout 10 min/fichier)\n"
         )
         self._append_console(f"{'='*50}\n\n")
@@ -874,10 +926,10 @@ class ZotifyGUI(ctk.CTk):
               stderr=PIPE    : keep error tail for diagnosis if it fails.
               timeout=10min  : prevents a single bad file from halting the batch.
             """
-            dst = src.with_suffix(".wav")
+            dst = src.with_suffix(self._conversion_ext())
             cmd = [
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst),
+                "-y", "-i", str(src), "-vn", *self._ffmpeg_encode_args(dst),
             ]
             try:
                 proc = subprocess.run(
@@ -954,7 +1006,7 @@ class ZotifyGUI(ctk.CTk):
         threading.Thread(target=supervisor, daemon=True).start()
 
     def _collect_files_to_convert(self) -> list[Path]:
-        """Build the comprehensive list of .ogg/etc files that still need a .wav sibling.
+        """Build the list of source audio files that still need a converted sibling.
 
         Sources merged:
           - Paths captured during this session via ZOTIFY_DL_COMPLETE.
@@ -962,10 +1014,15 @@ class ZotifyGUI(ctk.CTk):
           - Fallback recursive sweep of the configured download_dir if nothing
             was captured this session.
 
-        Files already converted (.wav sibling exists with non-zero size) are
+        Files already converted (target sibling exists with non-zero size) are
         skipped, so we never re-do work and we never leave anything behind.
         """
-        audio_exts = {".ogg", ".m4a", ".mp3", ".flac", ".opus", ".aac"}
+        target_ext = self._conversion_ext()
+        audio_exts = {".ogg", ".m4a", ".flac", ".opus", ".aac"}
+        if target_ext != ".mp3":
+            audio_exts.add(".mp3")
+        if target_ext != ".wav":
+            audio_exts.add(".wav")
         candidates: set[Path] = set()
         sweep_roots: set[Path] = set()
 
@@ -1001,7 +1058,7 @@ class ZotifyGUI(ctk.CTk):
 
         files_to_convert: list[Path] = []
         for src in candidates:
-            dst = src.with_suffix(".wav")
+            dst = src.with_suffix(target_ext)
             try:
                 if dst.exists() and dst.is_file() and dst.stat().st_size > 0:
                     continue
@@ -1115,27 +1172,19 @@ class ZotifyGUI(ctk.CTk):
                 )
 
     def _update_conv_progress(self) -> None:
-        """Update the progress bar and counter label during WAV conversion."""
+        """Update the progress bar and counter label during audio conversion."""
         if self.conv_progress_total > 0:
+            fmt_label = self._conversion_label()
             self.progress.configure(mode="determinate")
             fraction = self.conv_progress_current / self.conv_progress_total
             self.progress.set(fraction)
             self.progress_counter.configure(
-                text=f"{self.conv_progress_current}/{self.conv_progress_total} fichiers convertis en WAV"
+                text=f"{self.conv_progress_current}/{self.conv_progress_total} fichiers convertis en {fmt_label}"
             )
             self.status_label.configure(
-                text=f"Conversion WAV ({self.conv_progress_current}/{self.conv_progress_total})",
+                text=f"Conversion {fmt_label} ({self.conv_progress_current}/{self.conv_progress_total})",
                 text_color="#1DB954",
             )
-
-    def _browse_file(self) -> None:
-        selected = filedialog.askopenfilename(
-            title="Choisir un fichier",
-            filetypes=[("Text files", "*.txt"), ("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if selected:
-            self.query_entry.delete(0, "end")
-            self.query_entry.insert(0, selected)
 
     def _browse_default_config(self) -> None:
         selected = filedialog.askopenfilename(
@@ -1187,21 +1236,12 @@ class ZotifyGUI(ctk.CTk):
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
         return base.joinpath(*parts)
 
-    def _resolve_credentials_path(self) -> Path:
-        """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
-        
-        The CLI determines the credentials path by:
-        1. Reading CREDENTIALS_LOCATION from config.json
-        2. If empty, using the platform default directory
-        3. Appending 'credentials.json' if the path has no suffix
-        
-        The GUI must replicate this so the auth status display is accurate.
-        """
-        # Step 1: Determine config directory (same logic as Config.load)
-        if hasattr(self, 'default_config_entry'):
+    def _resolve_config_json_path(self) -> Path:
+        """Chemin du config.json (même logique que Config.load)."""
+        if hasattr(self, "default_config_entry"):
             config_input = self.default_config_entry.get().strip()
         else:
-            config_input = self.gui_settings.get("default_config_path", "")
+            config_input = str(self.gui_settings.get("default_config_path", "")).strip()
 
         if config_input:
             config_dir_or_file = Path(config_input).expanduser()
@@ -1212,7 +1252,101 @@ class ZotifyGUI(ctk.CTk):
                 "darwin": Path.home() / "Library" / "Application Support" / "Zotify",
             }
             config_dir_or_file = system_paths.get(sys.platform, Path.cwd() / ".zotify")
-        config_json = config_dir_or_file if config_dir_or_file.suffix else config_dir_or_file / "config.json"
+        return config_dir_or_file if config_dir_or_file.suffix else config_dir_or_file / "config.json"
+
+    def _load_config_json_dict(self) -> dict | None:
+        config_path = self._resolve_config_json_path()
+        if not config_path.exists():
+            return None
+        try:
+            with open(config_path, "r", encoding="utf-8") as config_file:
+                data = json.load(config_file)
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _find_deprecated_keys_in_config(self) -> set[str]:
+        data = self._load_config_json_dict()
+        if not data:
+            return set()
+        return {key for key in GUI_DEPRECATED_CONFIG_KEYS if key in data}
+
+    def _refresh_deprecated_key_labels(self) -> None:
+        if not hasattr(self, "deprec_key_labels"):
+            return
+        present = self._find_deprecated_keys_in_config()
+        for key, label in self.deprec_key_labels.items():
+            if key in present:
+                label.configure(text="(présente dans config.json)", text_color="#E8A838")
+            else:
+                label.configure(text="(absente dans config.json)", text_color="#6B6B6B")
+
+    def _remove_deprecated_keys_from_config(self, keys: list[str]) -> tuple[int, str]:
+        """Supprime les clés cochées du config.json. Retourne (nombre supprimé, message)."""
+        config_path = self._resolve_config_json_path()
+        if not config_path.exists():
+            return 0, f"Fichier introuvable : {config_path}"
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as config_file:
+                data = json.load(config_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            return 0, f"Impossible de lire config.json : {exc}"
+
+        if not isinstance(data, dict):
+            return 0, "config.json invalide (objet JSON attendu)."
+
+        removed: list[str] = []
+        for key in keys:
+            if key in data:
+                del data[key]
+                removed.append(key)
+
+        if not removed:
+            return 0, "Aucune des clés cochées n'était présente dans config.json."
+
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                json.dump(data, config_file, indent=4, ensure_ascii=False)
+        except OSError as exc:
+            return 0, f"Impossible d'écrire config.json : {exc}"
+
+        names = ", ".join(removed)
+        return len(removed), f"{len(removed)} clé(s) supprimée(s) : {names}"
+
+    def _apply_deprecated_config_cleanup(self) -> None:
+        keys_to_remove = [key for key, var in self.deprec_key_vars.items() if var.get()]
+        if not keys_to_remove:
+            self.settings_info.configure(
+                text="Coche au moins une option obsolète à supprimer.",
+                text_color="#E8A838",
+            )
+            return
+
+        count, message = self._remove_deprecated_keys_from_config(keys_to_remove)
+        if count > 0:
+            self.settings_info.configure(text=message, text_color="#1DB954")
+            self._append_console(f"Nettoyage config.json : {message}\n")
+            self._refresh_deprecated_key_labels()
+            for key in keys_to_remove:
+                if key not in self._find_deprecated_keys_in_config():
+                    self.deprec_key_vars[key].set(False)
+        else:
+            self.settings_info.configure(text=message, text_color="#E8A838")
+            self._append_console(f"Nettoyage config.json : {message}\n")
+
+    def _resolve_credentials_path(self) -> Path:
+        """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
+        
+        The CLI determines the credentials path by:
+        1. Reading CREDENTIALS_LOCATION from config.json
+        2. If empty, using the platform default directory
+        3. Appending 'credentials.json' if the path has no suffix
+        
+        The GUI must replicate this so the auth status display is accurate.
+        """
+        config_json = self._resolve_config_json_path()
 
         # Step 2: Try to read CREDENTIALS_LOCATION from config.json
         cred_location = ""
@@ -1279,75 +1413,75 @@ class ZotifyGUI(ctk.CTk):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _get_conversion_format(self) -> str:
+        if hasattr(self, "conversion_format_var"):
+            fmt = self.conversion_format_var.get().strip().lower()
+        else:
+            fmt = str(self.gui_settings.get("conversion_format", "wav")).strip().lower()
+        return "mp3" if fmt == "mp3" else "wav"
+
+    def _conversion_ext(self) -> str:
+        return ".mp3" if self._get_conversion_format() == "mp3" else ".wav"
+
+    def _conversion_label(self) -> str:
+        return "MP3" if self._get_conversion_format() == "mp3" else "WAV"
+
+    def _ffmpeg_encode_args(self, dst: Path) -> list[str]:
+        if self._get_conversion_format() == "mp3":
+            return ["-c:a", "libmp3lame", "-b:a", "320k", str(dst)]
+        return ["-c:a", "pcm_s16le", str(dst)]
+
     def save_settings(self) -> None:
+        conv_fmt = self.conversion_format_var.get().strip().lower()
+        deprecated_cleanup = {
+            key: var.get() for key, var in self.deprec_key_vars.items()
+        }
         self.gui_settings = {
             "download_dir": self.download_dir_entry.get().strip(),
             "podcast_dir": self.podcast_dir_entry.get().strip(),
             "default_config_path": self.default_config_entry.get().strip(),
             "api_client_id": self.client_id_entry.get().strip(),
+            "conversion_format": "mp3" if conv_fmt == "mp3" else "wav",
+            "deprecated_cleanup": deprecated_cleanup,
             "persist": self.persist_var.get(),
             "debug": self.debug_var.get(),
             "no_splash": self.no_splash_var.get(),
         }
+        cleanup_messages: list[str] = []
+        keys_to_remove = [key for key, checked in deprecated_cleanup.items() if checked]
+        if keys_to_remove:
+            count, message = self._remove_deprecated_keys_from_config(keys_to_remove)
+            if count > 0:
+                cleanup_messages.append(message)
+                self._refresh_deprecated_key_labels()
+                for key in keys_to_remove:
+                    if key not in self._find_deprecated_keys_in_config():
+                        self.deprec_key_vars[key].set(False)
+
         try:
             with open(self.settings_path, "w", encoding="utf-8") as settings_file:
                 json.dump(self.gui_settings, settings_file, indent=2)
-            self.settings_info.configure(text="Paramètres sauvegardés.", text_color="#1DB954")
+            status = "Paramètres sauvegardés."
+            if cleanup_messages:
+                status += " " + cleanup_messages[0]
+            self.settings_info.configure(text=status, text_color="#1DB954")
             self._append_console(f"Paramètres sauvegardés : {self.settings_path}\n")
+            for msg in cleanup_messages:
+                self._append_console(f"Nettoyage config.json : {msg}\n")
         except OSError as exc:
             self.settings_info.configure(text=f"Erreur sauvegarde : {exc}", text_color="#E22134")
             self._append_console(f"Erreur sauvegarde paramètres: {exc}\n")
 
-    def _update_mode_hint(self) -> None:
-        hints = {
-            "URL(s)": "Entrez une ou plusieurs URL separees par un espace",
-            "Fichier URLs": "Selectionnez un fichier .txt avec des URL",
-            "Recherche": "Entrez une recherche Spotify (ex: Daft Punk /t album)",
-            "Liked Songs": "Telecharge vos titres likes",
-            "Playlists utilisateur": "Telecharge vos playlists sauvegardees",
-            "Artistes suivis": "Telecharge vos artistes suivis",
-            "Albums suivis": "Telecharge vos albums suivis",
-            "Verifier librairie": "Verifie et corrige les metadonnees locales",
-        }
-        self.input_hint.configure(text=hints.get(self.mode_var.get(), ""))
-
     def _build_cli_args(self) -> list[str]:
         args = self._build_base_cli_args()
-        mode = self.mode_var.get()
         query = self.query_entry.get().strip()
 
         if self.persist_var.get():
             args.append("--persist")
 
-        if mode == "URL(s)" and query:
+        if query:
             args.extend(query.split())
-        elif mode == "Fichier URLs":
-            if query:
-                args.extend(["--file", query])
-        elif mode == "Recherche":
-            args.extend(["--search", query if query else " "])
-        elif mode == "Liked Songs":
-            args.append("--liked")
-        elif mode == "Playlists utilisateur":
-            args.append("--playlist")
-        elif mode == "Artistes suivis":
-            args.append("--artists")
-        elif mode == "Albums suivis":
-            args.append("--albums")
-        elif mode == "Verifier librairie":
-            args.append("--verify-library")
-
-        download_modes = {
-            "URL(s)",
-            "Fichier URLs",
-            "Recherche",
-            "Liked Songs",
-            "Playlists utilisateur",
-            "Artistes suivis",
-            "Albums suivis",
-        }
-        if mode in download_modes:
-            args.extend(["--codec", "ogg"])
+        args.extend(["--codec", "ogg"])
 
         return args
 
@@ -1357,7 +1491,7 @@ class ZotifyGUI(ctk.CTk):
             return
 
         self.current_action = "download"
-        self.current_mode = self.mode_var.get()
+        self.current_mode = "url"
         self.last_process_exit_code = None
         self.last_downloaded_path = None
         self.all_downloaded_paths = []
@@ -1472,12 +1606,12 @@ class ZotifyGUI(ctk.CTk):
                                 self.login_success_detected = True
                             self._show_login_success_popup()
                             self.show_page("Download")
-                    should_auto_convert_to_wav = (
+                    should_auto_convert = (
                         self.current_action == "download"
                         and self.last_process_exit_code == 0
-                        and self.current_mode != "Verifier librairie"
                     )
-                    if should_auto_convert_to_wav:
+                    if should_auto_convert:
+                        fmt_label = self._conversion_label()
                         # Keep the UI in "busy" state during conversion so the user
                         # cannot launch a second download mid-conversion and the
                         # progress bar/status stay informative.
@@ -1485,24 +1619,24 @@ class ZotifyGUI(ctk.CTk):
                         self.progress.configure(mode="determinate")
                         self.progress.set(0)
                         self.status_label.configure(
-                            text="Preparation de la conversion WAV...",
+                            text=f"Preparation de la conversion {fmt_label}...",
                             text_color="#1DB954",
                         )
                         n_files = len(self.all_downloaded_paths)
                         if n_files >= 1:
                             self._append_console(
                                 f"Telechargement termine ({n_files} fichier{'s' if n_files > 1 else ''}). "
-                                "Conversion WAV (sweep complet du dossier)...\n"
+                                f"Conversion {fmt_label} (sweep complet du dossier)...\n"
                             )
-                            self._batch_convert_to_wav()
+                            self._batch_convert()
                         else:
                             # No downloads captured this session, but the user might still have
                             # leftover .ogg files in the configured dir from a previous run.
                             self._append_console(
                                 "Aucun fichier capture dans la session. Sweep du dossier de "
-                                "telechargement pour rattraper les .ogg orphelins...\n"
+                                "telechargement pour rattraper les fichiers orphelins...\n"
                             )
-                            self._batch_convert_to_wav()
+                            self._batch_convert()
                     elif self.current_action == "download" and self.last_process_exit_code == 0:
                         self.show_page("Success")
                         self.current_action = "idle"
