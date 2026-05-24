@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Final
@@ -31,6 +32,13 @@ from tkinter import filedialog, Menu
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
 GUI_VERSION: Final[str] = "1.0.0"
+# Clés config.json obsolètes (ignorées par Zotify, génèrent des avertissements au lancement).
+GUI_DEPRECATED_CONFIG_KEYS: Final[tuple[str, ...]] = (
+    "SONG_ARCHIVE",
+    "DOWNLOAD_LYRICS",
+    "OVERRIDE_AUTO_WAIT",
+    "DOWNLOAD_REAL_TIME",
+)
 
 
 class ZotifyGUI(ctk.CTk):
@@ -59,8 +67,16 @@ class ZotifyGUI(ctk.CTk):
         self.current_mode = ""
         self.last_process_exit_code: int | None = None
         self.last_downloaded_path: Path | None = None
+        self.all_downloaded_paths: list[Path] = []
         self.last_download_metadata: dict[str, str] = {}
+        self.batch_convert_stats: dict[str, int] = {"total": 0, "converted": 0, "failed": 0}
         self.current_cover_image: ctk.CTkImage | None = None
+        self.dl_progress_current: int = 0
+        self.dl_progress_total: int = 0
+        self.failed_tracks: list[tuple[str, str]] = []
+        self.conv_progress_current: int = 0
+        self.conv_progress_total: int = 0
+        self._batch_convert_lock = threading.Lock()
 
         self.configure(fg_color="#121212")
         self.grid_columnconfigure(1, weight=1)
@@ -187,7 +203,11 @@ class ZotifyGUI(ctk.CTk):
         title = ctk.CTkLabel(card, text="Paramètres", font=ctk.CTkFont(size=32, weight="bold"), text_color="#FFFFFF")
         title.grid(row=0, column=0, padx=32, pady=(32, 8), sticky="w")
         
-        subtitle = ctk.CTkLabel(card, text="Configure les dossiers, le client API et l'authentification.", text_color="#B3B3B3")
+        subtitle = ctk.CTkLabel(
+            card,
+            text="Configure les dossiers, le client API, l'authentification et le format de conversion.",
+            text_color="#B3B3B3",
+        )
         subtitle.grid(row=1, column=0, padx=32, pady=(0, 32), sticky="w")
 
         row_idx = 2
@@ -217,6 +237,110 @@ class ZotifyGUI(ctk.CTk):
         self.client_id_entry = add_entry("Client ID API Spotify", "Laisser vide pour le client interne")
         self.client_id_entry.insert(0, self.gui_settings.get("api_client_id", ""))
 
+        saved_fmt = str(self.gui_settings.get("conversion_format", "wav")).strip().lower()
+        ctk.CTkLabel(
+            card,
+            text="Format de conversion",
+            font=ctk.CTkFont(weight="bold", size=14),
+            text_color="#FFFFFF",
+        ).grid(row=row_idx, column=0, padx=32, pady=(16, 8), sticky="w")
+        row_idx += 1
+        self.conversion_format_var = ctk.StringVar(value="MP3" if saved_fmt == "mp3" else "WAV")
+        self.conversion_format_menu = ctk.CTkOptionMenu(
+            card,
+            values=["WAV", "MP3"],
+            variable=self.conversion_format_var,
+            fg_color="#282828",
+            button_color="#3E3E3E",
+            button_hover_color="#535353",
+            dropdown_fg_color="#282828",
+            height=40,
+            width=200,
+        )
+        self.conversion_format_menu.grid(row=row_idx, column=0, padx=32, pady=(0, 4), sticky="w")
+        row_idx += 1
+        ctk.CTkLabel(
+            card,
+            text="WAV : sans perte (PCM 16 bits)  |  MP3 : 320 kbps (très haute qualité)",
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+        ).grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="w")
+        row_idx += 1
+
+        ctk.CTkLabel(
+            card,
+            text="Options obsolètes (config.json)",
+            font=ctk.CTkFont(weight="bold", size=14),
+            text_color="#FFFFFF",
+        ).grid(row=row_idx, column=0, padx=32, pady=(16, 8), sticky="w")
+        row_idx += 1
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Ces entrées sont ignorées par Zotify et provoquent des avertissements. "
+                "Coche celles à retirer du config.json, puis sauvegarde ou clique sur Nettoyer."
+            ),
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+            justify="left",
+            wraplength=700,
+        ).grid(row=row_idx, column=0, padx=32, pady=(0, 8), sticky="w")
+        row_idx += 1
+
+        present_deprecated = self._find_deprecated_keys_in_config()
+        saved_cleanup = self.gui_settings.get("deprecated_cleanup", {})
+        if not isinstance(saved_cleanup, dict):
+            saved_cleanup = {}
+        deprec_cb_kwargs = {
+            "border_color": "#535353",
+            "hover_color": "#1ED760",
+            "checkmark_color": "#000000",
+            "font": ctk.CTkFont(size=13),
+        }
+        self.deprec_key_vars: dict[str, ctk.BooleanVar] = {}
+        self.deprec_key_labels: dict[str, ctk.CTkLabel] = {}
+        for key in GUI_DEPRECATED_CONFIG_KEYS:
+            if key in saved_cleanup:
+                default_checked = bool(saved_cleanup[key])
+            else:
+                default_checked = key in present_deprecated
+            var = ctk.BooleanVar(value=default_checked)
+            self.deprec_key_vars[key] = var
+            row_frame = ctk.CTkFrame(card, fg_color="transparent")
+            row_frame.grid(row=row_idx, column=0, padx=32, pady=2, sticky="w")
+            row_idx += 1
+            ctk.CTkCheckBox(
+                row_frame,
+                text=f"Supprimer « {key} »",
+                variable=var,
+                **deprec_cb_kwargs,
+            ).grid(row=0, column=0, sticky="w")
+            status = "présente" if key in present_deprecated else "absente"
+            status_color = "#E8A838" if key in present_deprecated else "#6B6B6B"
+            status_lbl = ctk.CTkLabel(
+                row_frame,
+                text=f"({status} dans config.json)",
+                text_color=status_color,
+                font=ctk.CTkFont(size=11),
+            )
+            status_lbl.grid(row=0, column=1, padx=(12, 0), sticky="w")
+            self.deprec_key_labels[key] = status_lbl
+
+        cleanup_btn = ctk.CTkButton(
+            card,
+            text="Nettoyer le config.json",
+            command=self._apply_deprecated_config_cleanup,
+            fg_color="transparent",
+            hover_color="#3E3E3E",
+            border_width=1,
+            border_color="#B3B3B3",
+            text_color="#FFFFFF",
+            height=36,
+            corner_radius=18,
+        )
+        cleanup_btn.grid(row=row_idx, column=0, padx=32, pady=(8, 8), sticky="w")
+        row_idx += 1
+
         self.settings_info = ctk.CTkLabel(card, text="", text_color="#B3B3B3")
         self.settings_info.grid(row=row_idx, column=0, padx=32, pady=(24, 8), sticky="w")
         row_idx += 1
@@ -245,8 +369,11 @@ class ZotifyGUI(ctk.CTk):
         self.anim_canvas = ctk.CTkCanvas(self.success_header, width=100, height=100, bg="#181818", highlightthickness=0)
         self.anim_canvas.grid(row=0, column=0, pady=(0, 20))
         
-        self.success_title = ctk.CTkLabel(self.success_header, text="Téléchargement & Conversion Terminés", font=ctk.CTkFont(size=24, weight="bold"), text_color="#1DB954")
+        self.success_title = ctk.CTkLabel(self.success_header, text="Téléchargement \u0026 Conversion Terminés", font=ctk.CTkFont(size=24, weight="bold"), text_color="#1DB954")
         self.success_title.grid(row=1, column=0)
+
+        self.success_subtitle = ctk.CTkLabel(self.success_header, text="", font=ctk.CTkFont(size=14), text_color="#B3B3B3")
+        self.success_subtitle.grid(row=2, column=0, pady=(4, 0))
 
         self.track_info_frame = ctk.CTkFrame(self.success_card, fg_color="#282828", corner_radius=8)
         self.track_info_frame.grid(row=1, column=0, padx=40, pady=20, sticky="nsew")
@@ -266,8 +393,31 @@ class ZotifyGUI(ctk.CTk):
         self.success_track_album = ctk.CTkLabel(info_inner, text="Album", font=ctk.CTkFont(size=14), text_color="#B3B3B3", anchor="w", justify="left")
         self.success_track_album.pack(anchor="w")
 
+        self.failed_frame = ctk.CTkFrame(self.success_card, fg_color="#2A1F1F", corner_radius=8, border_width=1, border_color="#E22134")
+        self.failed_frame.grid(row=2, column=0, padx=40, pady=(0, 10), sticky="ew")
+        self.failed_frame.grid_columnconfigure(0, weight=1)
+        self.failed_header = ctk.CTkLabel(
+            self.failed_frame,
+            text="",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#FF6B6B",
+            anchor="w",
+            justify="left",
+        )
+        self.failed_header.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        self.failed_list_label = ctk.CTkLabel(
+            self.failed_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="#E8B4B4",
+            anchor="w",
+            justify="left",
+        )
+        self.failed_list_label.grid(row=1, column=0, padx=14, pady=(0, 10), sticky="ew")
+        self.failed_frame.grid_remove()
+
         buttons_frame = ctk.CTkFrame(self.success_card, fg_color="transparent")
-        buttons_frame.grid(row=2, column=0, pady=(0, 40))
+        buttons_frame.grid(row=3, column=0, pady=(0, 40))
 
         self.open_folder_btn = ctk.CTkButton(buttons_frame, text="Ouvrir le dossier", command=self._open_download_folder, fg_color="transparent", border_width=1, border_color="#B3B3B3", text_color="#FFFFFF", hover_color="#3E3E3E", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
         self.open_folder_btn.grid(row=0, column=0, padx=10)
@@ -325,29 +475,74 @@ class ZotifyGUI(ctk.CTk):
     def _animate_success_page(self) -> None:
         self.anim_canvas.delete("all")
         
-        title = self.last_download_metadata.get("title", "Titre Inconnu")
-        artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
-        album = self.last_download_metadata.get("album", "Album Inconnu")
+        is_batch = self.batch_convert_stats["total"] > 1
+        n_dl_failed = len(self.failed_tracks)
         
-        self.success_track_title.configure(text=title)
-        self.success_track_artist.configure(text=artist)
-        self.success_track_album.configure(text=album)
+        if is_batch:
+            n_total = self.batch_convert_stats["total"]
+            n_ok = self.batch_convert_stats["converted"]
+            n_fail = self.batch_convert_stats["failed"]
+            self.success_title.configure(text="Playlist Téléchargée \u0026 Convertie")
+            subtitle_parts = [f"{n_ok}/{n_total} morceaux convertis en {self._conversion_label()}"]
+            if n_fail > 0:
+                subtitle_parts.append(f"({n_fail} échec{'s' if n_fail > 1 else ''} ffmpeg)")
+            if n_dl_failed > 0:
+                subtitle_parts.append(f"- {n_dl_failed} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify")
+            self.success_subtitle.configure(text=" ".join(subtitle_parts))
+            self.success_track_title.configure(text=self.last_download_metadata.get("title", f"{n_total} morceaux"))
+            self.success_track_artist.configure(text=self.last_download_metadata.get("artist", ""))
+            self.success_track_album.configure(text=self.last_download_metadata.get("album", ""))
+        else:
+            self.success_title.configure(text="Téléchargement \u0026 Conversion Terminés")
+            if n_dl_failed > 0:
+                self.success_subtitle.configure(
+                    text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify"
+                )
+            else:
+                self.success_subtitle.configure(text="")
+            title = self.last_download_metadata.get("title", "Titre Inconnu")
+            artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
+            album = self.last_download_metadata.get("album", "Album Inconnu")
+            self.success_track_title.configure(text=title)
+            self.success_track_artist.configure(text=artist)
+            self.success_track_album.configure(text=album)
+        
+        if n_dl_failed > 0:
+            self.failed_header.configure(
+                text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} non disponible{'s' if n_dl_failed > 1 else ''} sur Spotify :"
+            )
+            max_visible = 5
+            visible = self.failed_tracks[:max_visible]
+            lines = [f"  • {name}" for name, _uri in visible]
+            remaining = n_dl_failed - len(visible)
+            if remaining > 0:
+                lines.append(f"  ... et {remaining} autre{'s' if remaining > 1 else ''}")
+            self.failed_list_label.configure(text="\n".join(lines))
+            self.failed_frame.grid()
+        else:
+            self.failed_frame.grid_remove()
+        
         self.current_cover_image = None
         self.cover_label.configure(image=None, text="Pas de pochette")
         
+        # Try to extract cover art from the last downloaded file
+        cover_source = None
         if self.last_downloaded_path and MUTAGEN_AVAILABLE:
-            ogg_path = self.last_downloaded_path.with_suffix(".ogg")
-            if not ogg_path.exists():
-                ogg_path = self.last_downloaded_path
-                
-            if ogg_path.exists() and ogg_path.suffix.lower() == ".ogg":
-                try:
-                    pil_img = self._extract_cover_from_ogg(ogg_path)
-                    if pil_img is not None:
-                        self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
-                        self.cover_label.configure(image=self.current_cover_image, text="")
-                except Exception as e:
-                    self._append_console(f"Erreur extraction pochette: {e}\n")
+            # Try .ogg first (original before conversion), then .wav, then the path itself
+            for suffix in [".ogg", ".wav", ".mp3", self.last_downloaded_path.suffix]:
+                candidate = self.last_downloaded_path.with_suffix(suffix)
+                if candidate.exists() and candidate.suffix.lower() == ".ogg":
+                    cover_source = candidate
+                    break
+        
+        if cover_source:
+            try:
+                pil_img = self._extract_cover_from_ogg(cover_source)
+                if pil_img is not None:
+                    self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
+                    self.cover_label.configure(image=self.current_cover_image, text="")
+            except Exception as e:
+                self._append_console(f"Erreur extraction pochette: {e}\n")
 
         self._anim_angle = 0
         self._anim_check_progress = 0
@@ -489,27 +684,26 @@ class ZotifyGUI(ctk.CTk):
         title = ctk.CTkLabel(left_frame, text="Téléchargement", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFFFFF")
         title.grid(row=0, column=0, pady=(0, 16), sticky="w")
 
-        mode_label = ctk.CTkLabel(left_frame, text="Mode de recherche", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
-        mode_label.grid(row=1, column=0, pady=(0, 4), sticky="w")
-        
-        self.mode_var = ctk.StringVar(value="URL(s)")
-        self.mode_menu = ctk.CTkOptionMenu(
+        url_label = ctk.CTkLabel(left_frame, text="Titre / URL playlist", font=ctk.CTkFont(weight="bold"), text_color="#B3B3B3")
+        url_label.grid(row=1, column=0, pady=(0, 4), sticky="w")
+
+        self.input_hint = ctk.CTkLabel(
             left_frame,
-            values=["URL(s)", "Fichier URLs", "Recherche", "Liked Songs", "Playlists utilisateur", "Artistes suivis", "Albums suivis", "Verifier librairie"],
-            variable=self.mode_var,
-            command=lambda _value: self._update_mode_hint(),
-            fg_color="#282828", button_color="#3E3E3E", button_hover_color="#535353", dropdown_fg_color="#282828", height=36
+            text="Collez une ou plusieurs URL Spotify (morceau, album, playlist…), séparées par un espace",
+            text_color="#B3B3B3",
+            font=ctk.CTkFont(size=12),
+            justify="left",
         )
-        self.mode_menu.grid(row=2, column=0, pady=(0, 4), sticky="ew")
+        self.input_hint.grid(row=2, column=0, pady=(0, 12), sticky="w")
 
-        self.input_hint = ctk.CTkLabel(left_frame, text="Entrez une ou plusieurs URL separees par un espace", text_color="#B3B3B3", font=ctk.CTkFont(size=12), justify="left")
-        self.input_hint.grid(row=3, column=0, pady=(0, 12), sticky="w")
-
-        self.query_entry = ctk.CTkEntry(left_frame, placeholder_text="URL, recherche ou chemin de fichier", fg_color="#282828", border_width=0, height=40)
-        self.query_entry.grid(row=4, column=0, pady=(0, 8), sticky="ew")
-
-        browse_button = ctk.CTkButton(left_frame, text="Parcourir un fichier", command=self._browse_file, fg_color="transparent", hover_color="#3E3E3E", text_color="#FFFFFF", border_width=1, border_color="#B3B3B3", height=36)
-        browse_button.grid(row=5, column=0, sticky="w")
+        self.query_entry = ctk.CTkEntry(
+            left_frame,
+            placeholder_text="https://open.spotify.com/...",
+            fg_color="#282828",
+            border_width=0,
+            height=40,
+        )
+        self.query_entry.grid(row=3, column=0, pady=(0, 8), sticky="ew")
 
         # --- Right Column ---
         right_frame = ctk.CTkFrame(content, fg_color="transparent")
@@ -536,17 +730,19 @@ class ZotifyGUI(ctk.CTk):
         self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 4), sticky="w")
 
         self.progress = ctk.CTkProgressBar(actions_frame, mode="indeterminate", progress_color="#1DB954", fg_color="#3E3E3E")
-        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 12), sticky="ew")
+        self.progress.grid(row=1, column=0, columnspan=2, pady=(0, 4), sticky="ew")
         self.progress.set(0)
 
+        self.progress_counter = ctk.CTkLabel(actions_frame, text="", text_color="#B3B3B3", font=ctk.CTkFont(size=12))
+        self.progress_counter.grid(row=2, column=0, columnspan=2, pady=(0, 8), sticky="w")
+
         self.run_button = ctk.CTkButton(actions_frame, text="Lancer", command=self.run_command, fg_color="#1DB954", text_color="#000000", hover_color="#1ED760", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
-        self.run_button.grid(row=2, column=0, padx=(0, 4), sticky="ew")
+        self.run_button.grid(row=3, column=0, padx=(0, 4), sticky="ew")
         
         self.stop_button = ctk.CTkButton(actions_frame, text="Arrêter", command=self.stop_command, fg_color="transparent", text_color="#FFFFFF", hover_color="#282828", border_width=1, border_color="#B3B3B3", font=ctk.CTkFont(weight="bold", size=15), height=40, corner_radius=20)
-        self.stop_button.grid(row=2, column=1, padx=(4, 0), sticky="ew")
+        self.stop_button.grid(row=3, column=1, padx=(4, 0), sticky="ew")
         self.stop_button.configure(state="disabled")
 
-        self._update_mode_hint()
         self._refresh_auth_status()
 
     def _build_output_panel(self, parent: ctk.CTkFrame) -> None:
@@ -665,46 +861,213 @@ class ZotifyGUI(ctk.CTk):
 
         ctk.CTkButton(popup, text="OK", command=popup.destroy).pack(padx=20, pady=(0, 16), anchor="e")
 
-    def _convert_last_download_to_wav(self, delete_source_after_success: bool = True) -> None:
-        src = self._resolve_last_downloaded_audio_path()
-        if src is None or not src.exists():
-            self._append_console("Conversion WAV impossible: fichier source introuvable.\n")
-            self.output_queue.put("__ALL_DONE__")
-            return
-        if src.suffix.lower() == ".wav":
-            self._append_console("Le fichier est deja en WAV.\n")
-            self.output_queue.put("__ALL_DONE__")
-            return
+    def _batch_convert(self) -> None:
+        """Convert ALL convertible audio files after a batch/playlist download.
+
+        Strategy:
+          1. Sweep the playlist destination folder(s) recursively for every audio file
+             whose .wav sibling does not already exist (catches files from previous
+             runs too, in addition to the current session).
+          2. Convert in parallel using a ThreadPoolExecutor (4 workers by default).
+          3. Emit a ZOTIFY_CONV_PROGRESS line after every completion so the GUI
+             updates its live progress bar.
+          4. Delete the source .ogg after a successful conversion.
+          5. Emit __ALL_DONE__ only after every conversion has finished.
+        """
+        fmt_label = self._conversion_label()
         if shutil.which("ffmpeg") is None:
             self._append_console("FFmpeg est introuvable. Installe-le ou ajoute-le au PATH.\n")
+            self._append_console(f"Conversion {fmt_label} annulee pour tous les fichiers.\n")
             self.output_queue.put("__ALL_DONE__")
             return
 
-        dst = src.with_suffix(".wav")
-        self._append_console(f"Conversion en WAV en cours: {src.name} -> {dst.name}\n")
+        files_to_convert = self._collect_files_to_convert()
 
-        def worker() -> None:
-            cmd = ["ffmpeg", "-y", "-i", str(src), "-vn", "-c:a", "pcm_s16le", str(dst)]
+        if not files_to_convert:
+            self._append_console(f"Aucun fichier audio a convertir en {fmt_label}.\n")
+            self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
+            self.output_queue.put("__ALL_DONE__")
+            return
+
+        n_total = len(files_to_convert)
+        # Slightly conservative parallelism: 4 ffmpeg in parallel is enough,
+        # going higher just thrashes disk/CPU without speed gain.
+        max_workers = min(4, max(1, (os.cpu_count() or 4) // 2 + 1))
+        self._append_console(f"\n{'='*50}\n")
+        self._append_console(
+            f"  Conversion {fmt_label} : {n_total} fichier{'s' if n_total > 1 else ''} a convertir "
+            f"({max_workers} workers en parallele, timeout 10 min/fichier)\n"
+        )
+        self._append_console(f"{'='*50}\n\n")
+        self.batch_convert_stats = {"total": n_total, "converted": 0, "failed": 0}
+        self.conv_progress_current = 0
+        self.conv_progress_total = n_total
+
+        # Per-file ffmpeg timeout. Catches genuine ffmpeg hangs (corrupt file,
+        # unexpected prompt, driver lock) instead of letting the whole batch stall.
+        ffmpeg_timeout_s = 600
+
+        # Windows: avoid spawning an ephemeral cmd.exe window for every ffmpeg call.
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        def convert_one(src: Path) -> tuple[Path, bool, str]:
+            """Run ffmpeg for a single file. Returns (src, ok, error_excerpt).
+
+            Critical flags to avoid hangs in parallel subprocess scenarios:
+              -nostdin       : tells ffmpeg NEVER to read from stdin (otherwise
+                               4 parallel ffmpeg processes can deadlock on a
+                               shared/closed stdin on Windows).
+              -hide_banner   : trim verbose output.
+              -loglevel error: suppress info/warning chatter we never display.
+              stdin=DEVNULL  : extra safety so ffmpeg can't ever block on stdin.
+              stdout=DEVNULL : we don't need progress chatter from ffmpeg.
+              stderr=PIPE    : keep error tail for diagnosis if it fails.
+              timeout=10min  : prevents a single bad file from halting the batch.
+            """
+            dst = src.with_suffix(self._conversion_ext())
+            cmd = [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-y", "-i", str(src), "-vn", *self._ffmpeg_encode_args(dst),
+            ]
             try:
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=ffmpeg_timeout_s,
+                    creationflags=creationflags,
+                )
                 if proc.returncode == 0:
-                    if delete_source_after_success and src.suffix.lower() == ".ogg":
+                    if src.suffix.lower() == ".ogg":
                         try:
                             src.unlink()
-                            self.output_queue.put(f"Conversion WAV reussie: {dst} (source .ogg supprimee)\n")
-                        except OSError as exc:
-                            self.output_queue.put(f"Conversion WAV reussie: {dst} (suppression .ogg impossible: {exc})\n")
-                    else:
-                        self.output_queue.put(f"Conversion WAV reussie: {dst}\n")
-                    self.output_queue.put("__ALL_DONE__")
-                else:
-                    self.output_queue.put("Echec conversion WAV (voir details ffmpeg ci-dessous).\n")
-                    if proc.stdout:
-                        self.output_queue.put(proc.stdout + "\n")
+                        except OSError:
+                            pass
+                    return (src, True, "")
+                tail = ""
+                if proc.stderr:
+                    tail = "\n".join(proc.stderr.strip().splitlines()[-3:])
+                return (src, False, tail)
+            except subprocess.TimeoutExpired:
+                # Clean up the half-written .wav so a retry later actually retries
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                except OSError:
+                    pass
+                return (src, False, f"Timeout apres {ffmpeg_timeout_s}s")
             except OSError as exc:
-                self.output_queue.put(f"Impossible de lancer ffmpeg: {exc}\n")
+                return (src, False, f"Erreur ffmpeg: {exc}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        def supervisor() -> None:
+            converted = 0
+            failed = 0
+            done = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                # Submit ALL jobs; queue submission immediately so workers
+                # are saturated from the start.
+                futures = {pool.submit(convert_one, src): src for src in files_to_convert}
+                # Announce which files are queued up - useful so the user
+                # sees activity even before the first conversion completes.
+                self.output_queue.put(
+                    f"  {len(futures)} fichier(s) en file, {max_workers} en cours en parallele...\n"
+                )
+                for future in as_completed(futures):
+                    src, ok, err = future.result()
+                    done += 1
+                    with self._batch_convert_lock:
+                        if ok:
+                            converted += 1
+                            self.batch_convert_stats["converted"] = converted
+                            self.output_queue.put(f"  [{done}/{n_total}] OK  {src.name}\n")
+                        else:
+                            failed += 1
+                            self.batch_convert_stats["failed"] = failed
+                            self.output_queue.put(f"  [{done}/{n_total}] !!! ECHEC {src.name}\n")
+                            if err:
+                                for line in err.splitlines():
+                                    self.output_queue.put(f"      {line}\n")
+                    # Live progress signal for the GUI progress bar
+                    self.output_queue.put(f"ZOTIFY_CONV_PROGRESS: {done}/{n_total}\n")
+
+            self.batch_convert_stats = {"total": n_total, "converted": converted, "failed": failed}
+            self.output_queue.put(f"\n{'='*50}\n")
+            self.output_queue.put(f"  Conversion terminee: {converted}/{n_total} reussi{'s' if converted > 1 else ''}")
+            if failed > 0:
+                self.output_queue.put(f" ({failed} echec{'s' if failed > 1 else ''})")
+            self.output_queue.put(f"\n{'='*50}\n\n")
+            self.output_queue.put("__ALL_DONE__")
+
+        threading.Thread(target=supervisor, daemon=True).start()
+
+    def _collect_files_to_convert(self) -> list[Path]:
+        """Build the list of source audio files that still need a converted sibling.
+
+        Sources merged:
+          - Paths captured during this session via ZOTIFY_DL_COMPLETE.
+          - Recursive sweep of each parent folder of those captured paths.
+          - Fallback recursive sweep of the configured download_dir if nothing
+            was captured this session.
+
+        Files already converted (target sibling exists with non-zero size) are
+        skipped, so we never re-do work and we never leave anything behind.
+        """
+        target_ext = self._conversion_ext()
+        audio_exts = {".ogg", ".m4a", ".flac", ".opus", ".aac"}
+        if target_ext != ".mp3":
+            audio_exts.add(".mp3")
+        if target_ext != ".wav":
+            audio_exts.add(".wav")
+        candidates: set[Path] = set()
+        sweep_roots: set[Path] = set()
+
+        for p in self.all_downloaded_paths:
+            if not isinstance(p, Path):
+                continue
+            resolved = p.expanduser()
+            if not resolved.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    resolved = Path(root_raw).expanduser() / resolved
+                else:
+                    resolved = Path.cwd() / resolved
+            if resolved.exists() and resolved.is_file() and resolved.suffix.lower() in audio_exts:
+                candidates.add(resolved)
+            if resolved.parent.exists() and resolved.parent.is_dir():
+                sweep_roots.add(resolved.parent)
+
+        if not sweep_roots:
+            root_raw = self.download_dir_entry.get().strip()
+            if root_raw:
+                root = Path(root_raw).expanduser()
+                if root.exists() and root.is_dir():
+                    sweep_roots.add(root)
+
+        for root in sweep_roots:
+            try:
+                for path in root.rglob("*"):
+                    if path.is_file() and path.suffix.lower() in audio_exts:
+                        candidates.add(path)
+            except OSError:
+                continue
+
+        files_to_convert: list[Path] = []
+        for src in candidates:
+            dst = src.with_suffix(target_ext)
+            try:
+                if dst.exists() and dst.is_file() and dst.stat().st_size > 0:
+                    continue
+            except OSError:
+                pass
+            files_to_convert.append(src)
+
+        files_to_convert.sort(key=lambda p: str(p).lower())
+        return files_to_convert
 
     def _resolve_last_downloaded_audio_path(self) -> Path | None:
         if self.last_downloaded_path:
@@ -733,6 +1096,36 @@ class ZotifyGUI(ctk.CTk):
         return max(candidates, key=lambda p: p.stat().st_mtime)
 
     def _extract_download_metadata(self, msg: str) -> None:
+        # Capture explicit final-failure signal (MANDATORY) emitted by api.py after retries
+        dl_failed_match = re.search(r'ZOTIFY_DL_FAILED:\s*"([^"]+)"\s*\(([^)]+)\)', msg)
+        if dl_failed_match:
+            name = dl_failed_match.group(1).strip()
+            uri = dl_failed_match.group(2).strip()
+            if (name, uri) not in self.failed_tracks:
+                self.failed_tracks.append((name, uri))
+
+        # Capture conversion progress signal (emitted from the batch worker thread itself)
+        conv_match = re.search(r'ZOTIFY_CONV_PROGRESS:\s*(\d+)/(\d+)', msg)
+        if conv_match:
+            self.conv_progress_current = int(conv_match.group(1))
+            self.conv_progress_total = int(conv_match.group(2))
+            self._update_conv_progress()
+
+        # Capture download paths from the ZOTIFY_DL_COMPLETE signal (MANDATORY channel, always visible)
+        dl_complete_match = re.search(r'ZOTIFY_DL_COMPLETE:\s*"([^"]+)"', msg)
+        if dl_complete_match:
+            raw_path = dl_complete_match.group(1).strip()
+            parsed = Path(raw_path).expanduser()
+            if not parsed.is_absolute():
+                root_raw = self.download_dir_entry.get().strip()
+                if root_raw:
+                    parsed = Path(root_raw).expanduser() / parsed
+            self.last_downloaded_path = parsed
+            # Accumulate all downloaded paths for batch conversion
+            if parsed not in self.all_downloaded_paths:
+                self.all_downloaded_paths.append(parsed)
+
+        # Also try the old format (for non-standard-interface mode)
         downloaded_match = re.search(r'(?:DOWNLOADED|SKIPPING):\s*"([^"]+)"', msg)
         if downloaded_match:
             raw_path = downloaded_match.group(1).strip()
@@ -742,6 +1135,15 @@ class ZotifyGUI(ctk.CTk):
                 if root_raw:
                     parsed = Path(root_raw).expanduser() / parsed
             self.last_downloaded_path = parsed
+            if parsed not in self.all_downloaded_paths:
+                self.all_downloaded_paths.append(parsed)
+
+        # Capture progress updates from ZOTIFY_PROGRESS signal
+        progress_match = re.search(r'ZOTIFY_PROGRESS:\s*(\d+)/(\d+)', msg)
+        if progress_match:
+            self.dl_progress_current = int(progress_match.group(1))
+            self.dl_progress_total = int(progress_match.group(2))
+            self._update_download_progress()
 
         patterns = {
             "title": r"Track Name ==\s*(.+)",
@@ -753,14 +1155,36 @@ class ZotifyGUI(ctk.CTk):
             if match:
                 self.last_download_metadata[key] = match.group(1).strip()
 
-    def _browse_file(self) -> None:
-        selected = filedialog.askopenfilename(
-            title="Choisir un fichier",
-            filetypes=[("Text files", "*.txt"), ("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if selected:
-            self.query_entry.delete(0, "end")
-            self.query_entry.insert(0, selected)
+    def _update_download_progress(self) -> None:
+        """Update the progress bar and counter label with current download progress."""
+        if self.dl_progress_total > 0:
+            # Switch to determinate mode for real progress
+            self.progress.configure(mode="determinate")
+            fraction = self.dl_progress_current / self.dl_progress_total
+            self.progress.set(fraction)
+            self.progress_counter.configure(
+                text=f"{self.dl_progress_current}/{self.dl_progress_total} morceaux téléchargés"
+            )
+            if self.dl_progress_current > 0:
+                self.status_label.configure(
+                    text=f"Téléchargement en cours ({self.dl_progress_current}/{self.dl_progress_total})",
+                    text_color="#1DB954"
+                )
+
+    def _update_conv_progress(self) -> None:
+        """Update the progress bar and counter label during audio conversion."""
+        if self.conv_progress_total > 0:
+            fmt_label = self._conversion_label()
+            self.progress.configure(mode="determinate")
+            fraction = self.conv_progress_current / self.conv_progress_total
+            self.progress.set(fraction)
+            self.progress_counter.configure(
+                text=f"{self.conv_progress_current}/{self.conv_progress_total} fichiers convertis en {fmt_label}"
+            )
+            self.status_label.configure(
+                text=f"Conversion {fmt_label} ({self.conv_progress_current}/{self.conv_progress_total})",
+                text_color="#1DB954",
+            )
 
     def _browse_default_config(self) -> None:
         selected = filedialog.askopenfilename(
@@ -812,21 +1236,12 @@ class ZotifyGUI(ctk.CTk):
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
         return base.joinpath(*parts)
 
-    def _resolve_credentials_path(self) -> Path:
-        """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
-        
-        The CLI determines the credentials path by:
-        1. Reading CREDENTIALS_LOCATION from config.json
-        2. If empty, using the platform default directory
-        3. Appending 'credentials.json' if the path has no suffix
-        
-        The GUI must replicate this so the auth status display is accurate.
-        """
-        # Step 1: Determine config directory (same logic as Config.load)
-        if hasattr(self, 'default_config_entry'):
+    def _resolve_config_json_path(self) -> Path:
+        """Chemin du config.json (même logique que Config.load)."""
+        if hasattr(self, "default_config_entry"):
             config_input = self.default_config_entry.get().strip()
         else:
-            config_input = self.gui_settings.get("default_config_path", "")
+            config_input = str(self.gui_settings.get("default_config_path", "")).strip()
 
         if config_input:
             config_dir_or_file = Path(config_input).expanduser()
@@ -837,7 +1252,101 @@ class ZotifyGUI(ctk.CTk):
                 "darwin": Path.home() / "Library" / "Application Support" / "Zotify",
             }
             config_dir_or_file = system_paths.get(sys.platform, Path.cwd() / ".zotify")
-        config_json = config_dir_or_file if config_dir_or_file.suffix else config_dir_or_file / "config.json"
+        return config_dir_or_file if config_dir_or_file.suffix else config_dir_or_file / "config.json"
+
+    def _load_config_json_dict(self) -> dict | None:
+        config_path = self._resolve_config_json_path()
+        if not config_path.exists():
+            return None
+        try:
+            with open(config_path, "r", encoding="utf-8") as config_file:
+                data = json.load(config_file)
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _find_deprecated_keys_in_config(self) -> set[str]:
+        data = self._load_config_json_dict()
+        if not data:
+            return set()
+        return {key for key in GUI_DEPRECATED_CONFIG_KEYS if key in data}
+
+    def _refresh_deprecated_key_labels(self) -> None:
+        if not hasattr(self, "deprec_key_labels"):
+            return
+        present = self._find_deprecated_keys_in_config()
+        for key, label in self.deprec_key_labels.items():
+            if key in present:
+                label.configure(text="(présente dans config.json)", text_color="#E8A838")
+            else:
+                label.configure(text="(absente dans config.json)", text_color="#6B6B6B")
+
+    def _remove_deprecated_keys_from_config(self, keys: list[str]) -> tuple[int, str]:
+        """Supprime les clés cochées du config.json. Retourne (nombre supprimé, message)."""
+        config_path = self._resolve_config_json_path()
+        if not config_path.exists():
+            return 0, f"Fichier introuvable : {config_path}"
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as config_file:
+                data = json.load(config_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            return 0, f"Impossible de lire config.json : {exc}"
+
+        if not isinstance(data, dict):
+            return 0, "config.json invalide (objet JSON attendu)."
+
+        removed: list[str] = []
+        for key in keys:
+            if key in data:
+                del data[key]
+                removed.append(key)
+
+        if not removed:
+            return 0, "Aucune des clés cochées n'était présente dans config.json."
+
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                json.dump(data, config_file, indent=4, ensure_ascii=False)
+        except OSError as exc:
+            return 0, f"Impossible d'écrire config.json : {exc}"
+
+        names = ", ".join(removed)
+        return len(removed), f"{len(removed)} clé(s) supprimée(s) : {names}"
+
+    def _apply_deprecated_config_cleanup(self) -> None:
+        keys_to_remove = [key for key, var in self.deprec_key_vars.items() if var.get()]
+        if not keys_to_remove:
+            self.settings_info.configure(
+                text="Coche au moins une option obsolète à supprimer.",
+                text_color="#E8A838",
+            )
+            return
+
+        count, message = self._remove_deprecated_keys_from_config(keys_to_remove)
+        if count > 0:
+            self.settings_info.configure(text=message, text_color="#1DB954")
+            self._append_console(f"Nettoyage config.json : {message}\n")
+            self._refresh_deprecated_key_labels()
+            for key in keys_to_remove:
+                if key not in self._find_deprecated_keys_in_config():
+                    self.deprec_key_vars[key].set(False)
+        else:
+            self.settings_info.configure(text=message, text_color="#E8A838")
+            self._append_console(f"Nettoyage config.json : {message}\n")
+
+    def _resolve_credentials_path(self) -> Path:
+        """Resolve credentials path matching the CLI's Config.get_credentials_location() logic.
+        
+        The CLI determines the credentials path by:
+        1. Reading CREDENTIALS_LOCATION from config.json
+        2. If empty, using the platform default directory
+        3. Appending 'credentials.json' if the path has no suffix
+        
+        The GUI must replicate this so the auth status display is accurate.
+        """
+        config_json = self._resolve_config_json_path()
 
         # Step 2: Try to read CREDENTIALS_LOCATION from config.json
         cred_location = ""
@@ -904,75 +1413,75 @@ class ZotifyGUI(ctk.CTk):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _get_conversion_format(self) -> str:
+        if hasattr(self, "conversion_format_var"):
+            fmt = self.conversion_format_var.get().strip().lower()
+        else:
+            fmt = str(self.gui_settings.get("conversion_format", "wav")).strip().lower()
+        return "mp3" if fmt == "mp3" else "wav"
+
+    def _conversion_ext(self) -> str:
+        return ".mp3" if self._get_conversion_format() == "mp3" else ".wav"
+
+    def _conversion_label(self) -> str:
+        return "MP3" if self._get_conversion_format() == "mp3" else "WAV"
+
+    def _ffmpeg_encode_args(self, dst: Path) -> list[str]:
+        if self._get_conversion_format() == "mp3":
+            return ["-c:a", "libmp3lame", "-b:a", "320k", str(dst)]
+        return ["-c:a", "pcm_s16le", str(dst)]
+
     def save_settings(self) -> None:
+        conv_fmt = self.conversion_format_var.get().strip().lower()
+        deprecated_cleanup = {
+            key: var.get() for key, var in self.deprec_key_vars.items()
+        }
         self.gui_settings = {
             "download_dir": self.download_dir_entry.get().strip(),
             "podcast_dir": self.podcast_dir_entry.get().strip(),
             "default_config_path": self.default_config_entry.get().strip(),
             "api_client_id": self.client_id_entry.get().strip(),
+            "conversion_format": "mp3" if conv_fmt == "mp3" else "wav",
+            "deprecated_cleanup": deprecated_cleanup,
             "persist": self.persist_var.get(),
             "debug": self.debug_var.get(),
             "no_splash": self.no_splash_var.get(),
         }
+        cleanup_messages: list[str] = []
+        keys_to_remove = [key for key, checked in deprecated_cleanup.items() if checked]
+        if keys_to_remove:
+            count, message = self._remove_deprecated_keys_from_config(keys_to_remove)
+            if count > 0:
+                cleanup_messages.append(message)
+                self._refresh_deprecated_key_labels()
+                for key in keys_to_remove:
+                    if key not in self._find_deprecated_keys_in_config():
+                        self.deprec_key_vars[key].set(False)
+
         try:
             with open(self.settings_path, "w", encoding="utf-8") as settings_file:
                 json.dump(self.gui_settings, settings_file, indent=2)
-            self.settings_info.configure(text="Paramètres sauvegardés.", text_color="#1DB954")
+            status = "Paramètres sauvegardés."
+            if cleanup_messages:
+                status += " " + cleanup_messages[0]
+            self.settings_info.configure(text=status, text_color="#1DB954")
             self._append_console(f"Paramètres sauvegardés : {self.settings_path}\n")
+            for msg in cleanup_messages:
+                self._append_console(f"Nettoyage config.json : {msg}\n")
         except OSError as exc:
             self.settings_info.configure(text=f"Erreur sauvegarde : {exc}", text_color="#E22134")
             self._append_console(f"Erreur sauvegarde paramètres: {exc}\n")
 
-    def _update_mode_hint(self) -> None:
-        hints = {
-            "URL(s)": "Entrez une ou plusieurs URL separees par un espace",
-            "Fichier URLs": "Selectionnez un fichier .txt avec des URL",
-            "Recherche": "Entrez une recherche Spotify (ex: Daft Punk /t album)",
-            "Liked Songs": "Telecharge vos titres likes",
-            "Playlists utilisateur": "Telecharge vos playlists sauvegardees",
-            "Artistes suivis": "Telecharge vos artistes suivis",
-            "Albums suivis": "Telecharge vos albums suivis",
-            "Verifier librairie": "Verifie et corrige les metadonnees locales",
-        }
-        self.input_hint.configure(text=hints.get(self.mode_var.get(), ""))
-
     def _build_cli_args(self) -> list[str]:
         args = self._build_base_cli_args()
-        mode = self.mode_var.get()
         query = self.query_entry.get().strip()
 
         if self.persist_var.get():
             args.append("--persist")
 
-        if mode == "URL(s)" and query:
+        if query:
             args.extend(query.split())
-        elif mode == "Fichier URLs":
-            if query:
-                args.extend(["--file", query])
-        elif mode == "Recherche":
-            args.extend(["--search", query if query else " "])
-        elif mode == "Liked Songs":
-            args.append("--liked")
-        elif mode == "Playlists utilisateur":
-            args.append("--playlist")
-        elif mode == "Artistes suivis":
-            args.append("--artists")
-        elif mode == "Albums suivis":
-            args.append("--albums")
-        elif mode == "Verifier librairie":
-            args.append("--verify-library")
-
-        download_modes = {
-            "URL(s)",
-            "Fichier URLs",
-            "Recherche",
-            "Liked Songs",
-            "Playlists utilisateur",
-            "Artistes suivis",
-            "Albums suivis",
-        }
-        if mode in download_modes:
-            args.extend(["--codec", "ogg"])
+        args.extend(["--codec", "ogg"])
 
         return args
 
@@ -982,10 +1491,20 @@ class ZotifyGUI(ctk.CTk):
             return
 
         self.current_action = "download"
-        self.current_mode = self.mode_var.get()
+        self.current_mode = "url"
         self.last_process_exit_code = None
         self.last_downloaded_path = None
+        self.all_downloaded_paths = []
         self.last_download_metadata = {}
+        self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
+        self.dl_progress_current = 0
+        self.dl_progress_total = 0
+        self.conv_progress_current = 0
+        self.conv_progress_total = 0
+        self.failed_tracks = []
+        self.progress.configure(mode="indeterminate")
+        self.progress.set(0)
+        self.progress_counter.configure(text="")
         command = self._build_cli_args()
         self._start_subprocess(command, "Execution en cours...")
 
@@ -1087,14 +1606,37 @@ class ZotifyGUI(ctk.CTk):
                                 self.login_success_detected = True
                             self._show_login_success_popup()
                             self.show_page("Download")
-                    should_auto_convert_to_wav = (
+                    should_auto_convert = (
                         self.current_action == "download"
                         and self.last_process_exit_code == 0
-                        and self.current_mode != "Verifier librairie"
                     )
-                    if should_auto_convert_to_wav:
-                        self._append_console("Telechargement termine. Conversion automatique en WAV...\n")
-                        self._convert_last_download_to_wav(delete_source_after_success=False)
+                    if should_auto_convert:
+                        fmt_label = self._conversion_label()
+                        # Keep the UI in "busy" state during conversion so the user
+                        # cannot launch a second download mid-conversion and the
+                        # progress bar/status stay informative.
+                        self.run_button.configure(state="disabled")
+                        self.progress.configure(mode="determinate")
+                        self.progress.set(0)
+                        self.status_label.configure(
+                            text=f"Preparation de la conversion {fmt_label}...",
+                            text_color="#1DB954",
+                        )
+                        n_files = len(self.all_downloaded_paths)
+                        if n_files >= 1:
+                            self._append_console(
+                                f"Telechargement termine ({n_files} fichier{'s' if n_files > 1 else ''}). "
+                                f"Conversion {fmt_label} (sweep complet du dossier)...\n"
+                            )
+                            self._batch_convert()
+                        else:
+                            # No downloads captured this session, but the user might still have
+                            # leftover .ogg files in the configured dir from a previous run.
+                            self._append_console(
+                                "Aucun fichier capture dans la session. Sweep du dossier de "
+                                "telechargement pour rattraper les fichiers orphelins...\n"
+                            )
+                            self._batch_convert()
                     elif self.current_action == "download" and self.last_process_exit_code == 0:
                         self.show_page("Success")
                         self.current_action = "idle"
@@ -1133,6 +1675,11 @@ class ZotifyGUI(ctk.CTk):
                         or stripped_msg.startswith("[\u25cf")
                     )
                     if noisy_login_line:
+                        continue
+                    # Filter internal GUI<->CLI signals (already parsed above) so they
+                    # do not pollute the user-facing console output.
+                    if stripped_msg.startswith(("ZOTIFY_PROGRESS:", "ZOTIFY_DL_COMPLETE:",
+                                                "ZOTIFY_DL_FAILED:", "ZOTIFY_CONV_PROGRESS:")):
                         continue
                     if msg == self.last_console_line:
                         continue

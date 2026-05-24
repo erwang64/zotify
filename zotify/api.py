@@ -542,6 +542,10 @@ class DLContent(Content):
             Printer.hashtaged(PrintChannel.SKIPPING, f'"{self}" ({self.clsn.upper()} DOWNLOADED PREVIOUSLY)\n'
                                                      f'FILE: "{self.rel_path(archived_path)}"')
             self.mark_downloaded(parent_stack, archived_path)
+            # Emit MANDATORY signal so the GUI can include this already-existing file
+            # in the batch conversion sweep, even though no fresh download happened.
+            Printer.new_print(PrintChannel.MANDATORY,
+                              f'ZOTIFY_DL_COMPLETE: "{archived_path}"', end="\n")
         
         path = self.output_path(parent_stack)
         path_exists = Path(path).is_file() and Path(path).stat().st_size
@@ -561,6 +565,8 @@ class DLContent(Content):
         if path_exists and Zotify.CONFIG.get_skip_existing() and Zotify.CONFIG.get_no_dir_archives():
             Printer.hashtaged(PrintChannel.SKIPPING, f'"{self.rel_path(path)}" (FILE ALREADY EXISTS)')
             self.mark_downloaded(parent_stack, path)
+            Printer.new_print(PrintChannel.MANDATORY,
+                              f'ZOTIFY_DL_COMPLETE: "{path}"', end="\n")
             return True
         elif in_dir_archive and Zotify.CONFIG.get_skip_existing() and not Zotify.CONFIG.get_no_dir_archives():
             handle_archive(path.parent)
@@ -734,6 +740,10 @@ class Track(DLContent):
             artists_names = conv_artist_format(self.artists, FORCE_NO_LIST=True)
             update_repl(self.artists[0].name,   "{artist}", "{track_artist}", "{song_artist}", "{main_artist}", "{primary_artist}")
             update_repl(artists_names,          "{artists}", "{track_artists}", "{song_artists}")
+        else:
+            # Fallback: avoid leaving unreplaced {artist} placeholders in the filename
+            update_repl("Unknown Artist",       "{artist}", "{track_artist}", "{song_artist}", "{main_artist}", "{primary_artist}",
+                                                "{artists}", "{track_artists}", "{song_artists}")
         
         if self.album:
             update_repl(self.album.id,              "{album_id}")
@@ -815,8 +825,8 @@ class Track(DLContent):
             with open(lyricdir / f"{lrc_filename}.lrc", 'w', encoding='utf-8') as file:
                 if Zotify.CONFIG.get_lyrics_header():
                     lrc_header = [f"[ti: {self.name}]\n",
-                                  f"[ar: {conv_artist_format(self.artists, FORCE_NO_LIST=True)}]\n",
-                                  f"[al: {self.album.name}]\n",
+                                  f"[ar: {conv_artist_format(self.artists or [], FORCE_NO_LIST=True)}]\n",
+                                  f"[al: {self.album.name if self.album else 'Unknown Album'}]\n",
                                   f"[length: {self.duration_ms // 60000}:{(self.duration_ms % 60000) // 1000}]\n",
                                   f"[by: Zotify v{Zotify.VERSION}]\n",
                                   "\n"]
@@ -851,14 +861,14 @@ class Track(DLContent):
             else:                    custom_ogg_tag(tag, val)
         
         # Reliable Tags
-        set_tag_safe(       ARTIST,         conv_artist_format(self.artists))
+        set_tag_safe(       ARTIST,         conv_artist_format(self.artists or []))
         set_tag_safe(       GENRE,          conv_genre_format(self.genres))
         set_tag_safe(       TRACKTITLE,     self.name)
         set_tag_safe(       DISCNUMBER,     self.disc_number)
         set_tag_safe(       TRACKNUMBER,    self.track_number)
         if self.album:
             set_tag_safe(   ALBUM,          self.album.name)
-            set_tag_safe(   ALBUMARTIST,    conv_artist_format(self.album.artists))
+            set_tag_safe(   ALBUMARTIST,    conv_artist_format(self.album.artists or []))
             set_tag_safe(   YEAR,           self.album.year)
             img = requests.get(self.album.image_url).content if self.album.image_url else None
             set_tag_safe(   ARTWORK,        img)
@@ -929,10 +939,25 @@ class Track(DLContent):
             if Zotify.CONFIG.get_temp_download_dir():
                 temppath = Zotify.CONFIG.get_temp_download_dir() / f'zotify_{str(uuid4())}_{self.id}.tmp'
         
-        stream = Zotify.get_content_stream(self)
+        stream = None
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            stream = Zotify.get_content_stream(self)
+            if stream is not None:
+                break
+            if attempt < max_attempts:
+                wait = 2 ** (attempt - 1)
+                Printer.hashtaged(PrintChannel.WARNING,
+                                  f'CONTENT STREAM FAILED (attempt {attempt}/{max_attempts}) FOR "{self}"\n' +
+                                  f'RETRYING IN {wait}s')
+                time.sleep(wait)
         if stream is None:
             Printer.hashtaged(PrintChannel.ERROR, 'SKIPPING TRACK - FAILED TO GET CONTENT STREAM\n' +
                                                  f'Track_ID: {self.id}')
+            # Emit a MANDATORY parseable line so the GUI can list this track in the final summary
+            safe_name = (self.name or "Unknown Track").replace('"', "'")
+            Printer.new_print(PrintChannel.MANDATORY,
+                              f'ZOTIFY_DL_FAILED: "{safe_name}" ({self.uri})', end="\n")
             return
         
         self.set_dl_status("Downloading Stream")
@@ -1529,7 +1554,7 @@ class Query(Container):
     def fetch_extra_metadata(self):
         alltracks = {t for t in self.ALL_NODES if isinstance(t, Track) and not t.is_local}
         
-        artists = set().union(*(set(track.artists) for track in alltracks))
+        artists = set().union(*(set(track.artists) for track in alltracks if track.artists))
         artist_uris: dict[str, Artist] = {a.uri: a for a in artists if not a.is_local and not a.hasMetadata
                                           and not "".join(a.name.lower().split()) == "variousartists"}
         if Zotify.CONFIG.get_save_genres() and artist_uris:
@@ -1538,6 +1563,7 @@ class Query(Container):
                 artist.parse_metadata(None, artist_resp)
                 artist.needs_expansion = False
             for track in alltracks:
+                if not track.artists: continue
                 genres: list[str] = [*set().union(*[set(artist.genres) for artist in track.artists if artist.genres])]
                 genres.sort()
                 track.genres = genres

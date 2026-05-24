@@ -521,13 +521,14 @@ class Interface:
         from zotify.api import DLContent
         obj: DLContent = Interface.CURRENT_BRANCH[-1]
         dl_prog = len({c for c in Interface.ALL_DLCONTENT if c.downloaded})
+        dl_total = len(Interface.ALL_DLCONTENT)
         dashboard = f"Query Tree: {Interface.CURRENT_BRANCH}\n" +\
                     f"\n" +\
                     f"Current DLContent: {obj.clsn}\n" +\
                     f"{Interface.parse_obj_db(obj)}\n" +\
                     f"\n" +\
                     f"Status: {obj.dl_status}\n" +\
-                    f"Total Query Progress: {dl_prog}/{len(Interface.ALL_DLCONTENT)}\n" +\
+                    f"Total Query Progress: {dl_prog}/{dl_total}\n" +\
                     f"\n" +\
                     f"Last Download Time: {Interface.LAST_DL_TIME}\n" +\
                     f"Last Conversion Time: {Interface.LAST_CONV_TIME}\n" +\
@@ -535,6 +536,8 @@ class Interface:
                     f"Last Encountered Error: {Interface.LAST_ERROR}\n"
         Printer.clear()
         Interface.print_interface(dashboard)
+        # Emit a parseable progress line for GUI consumption (MANDATORY passes through standard-interface filter)
+        Printer.new_print(PrintChannel.MANDATORY, f"ZOTIFY_PROGRESS: {dl_prog}/{dl_total}", end="\n")
     
     @staticmethod
     def dl_complete(dlcontent, path, time_elapsed_dl: str, time_elapsed_ffmpeg: str | None) -> None:
@@ -549,3 +552,5 @@ class Interface:
         Printer.hashtaged(PrintChannel.DOWNLOADS, f'DOWNLOADED: "{dlcontent.rel_path(path)}"\n' +
                                                   f'DOWNLOAD TOOK {time_elapsed_dl}' +
                                                   f' (PLUS {time_elapsed_ffmpeg} CONVERTING)' if time_elapsed_ffmpeg else '')
+        # Emit a MANDATORY line so the GUI subprocess can always capture the download path
+        Printer.new_print(PrintChannel.MANDATORY, f'ZOTIFY_DL_COMPLETE: "{path}"', end="\n")
