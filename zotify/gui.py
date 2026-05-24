@@ -31,7 +31,7 @@ from tkinter import filedialog, Menu
 
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
-GUI_VERSION: Final[str] = "1.0.0"
+GUI_VERSION: Final[str] = "1.1.0"
 # Clés config.json obsolètes (ignorées par Zotify, génèrent des avertissements au lancement).
 GUI_DEPRECATED_CONFIG_KEYS: Final[tuple[str, ...]] = (
     "SONG_ARCHIVE",
