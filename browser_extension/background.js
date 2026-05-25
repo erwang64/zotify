@@ -17,13 +17,18 @@ async function fetchWithTimeout(url, timeoutMs) {
 }
 
 async function discoverGuiPort() {
+    const info = await discoverGuiInfo();
+    return info ? info.port : null;
+}
+
+async function discoverGuiInfo() {
     for (const port of ZOTIFY_PORTS) {
         try {
             const resp = await fetchWithTimeout(`http://127.0.0.1:${port}/ping`, 1500);
             if (resp.ok) {
                 const data = await resp.json();
                 if (data && data.service === "zotify-gui") {
-                    return port;
+                    return { port, active: data.active || 0, queued: data.queued || 0 };
                 }
             }
         } catch (_) { /* try next */ }
@@ -55,8 +60,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return true;  // keep channel open for async response
     }
     if (msg && msg.type === "zotify-ping") {
-        discoverGuiPort().then((port) => {
-            sendResponse({ ok: port !== null, port });
+        discoverGuiInfo().then((info) => {
+            sendResponse(info ? { ok: true, ...info } : { ok: false });
         });
         return true;
     }

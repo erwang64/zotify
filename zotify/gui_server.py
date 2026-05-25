@@ -111,11 +111,22 @@ class _Handler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
 
         if path in ("/", "/ping"):
+            gui = _Handler.gui
+            n_active = 0
+            n_queued = 0
+            if gui is not None:
+                try:
+                    n_active = len(getattr(gui, "active_downloads", {}) or {})
+                    n_queued = len(getattr(gui, "download_queue", []) or [])
+                except Exception:
+                    pass
             self._send_json(200, {
                 "ok": True,
                 "service": "zotify-gui",
                 "version": _get_gui_version(),
                 "busy": self._gui_is_busy(),
+                "active": n_active,
+                "queued": n_queued,
             })
             return
 
@@ -144,11 +155,17 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "Endpoint inconnu."})
 
     def _gui_is_busy(self) -> bool:
+        """True si auth en cours OU file de DL pleine (refuserait l'ajout)."""
         gui = _Handler.gui
         if gui is None:
             return False
         try:
-            return getattr(gui, "current_process", None) is not None
+            if getattr(gui, "auth_process", None) is not None:
+                return True
+            # Plus de notion de "occupe" pour les downloads : on accepte
+            # toujours d'en empiler (parallele + queue). On expose juste
+            # le nombre d'actifs / en file pour info des extensions.
+            return False
         except Exception:
             return False
 

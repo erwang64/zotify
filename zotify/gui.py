@@ -12,6 +12,7 @@ import threading
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from collections import deque
 from queue import Empty, Queue
 from typing import Final
 import math
@@ -33,6 +34,11 @@ from tkinter import filedialog, Menu
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
 GUI_VERSION: Final[str] = "1.1.0"
+# Nombre max de telechargements lances en parallele. Au-dela, les
+# demandes supplementaires sont mises en file et demarrees au fur
+# et a mesure que les workers se liberent. 3 est un bon compromis
+# (Spotify rate-limite assez vite si on monte plus haut).
+MAX_PARALLEL_DOWNLOADS: Final[int] = 3
 # Clés config.json obsolètes (ignorées par Zotify, génèrent des avertissements au lancement).
 GUI_DEPRECATED_CONFIG_KEYS: Final[tuple[str, ...]] = (
     "SONG_ARCHIVE",
@@ -56,7 +62,17 @@ class ZotifyGUI(ctk.CTk):
         self.settings_path = self._resolve_settings_path()
         self.gui_settings = self._load_gui_settings()
 
-        self.current_process: subprocess.Popen | None = None
+        # Auth subprocess (login/logout) : strictement exclusif.
+        self.auth_process: subprocess.Popen | None = None
+        # Downloads paralleles : jusqu'a MAX_PARALLEL_DOWNLOADS actifs
+        # simultanement, le reste est mis en file dans download_queue.
+        self.active_downloads: dict[int, subprocess.Popen] = {}
+        self.download_queue: deque[tuple[str, list[str]]] = deque()
+        self.next_dl_id: int = 0
+        self._dl_lock = threading.Lock()
+        # Compteur global pour declencher le batch convert UNE fois
+        # quand toute la batch (actifs + file) est terminee.
+        self.last_dl_exit_codes: dict[int, int] = {}
         self.output_queue: Queue[str] = Queue()
         self.current_page = "Accueil"
         self.pending_oauth_url: str | None = None
@@ -70,6 +86,11 @@ class ZotifyGUI(ctk.CTk):
         self.last_downloaded_path: Path | None = None
         self.all_downloaded_paths: list[Path] = []
         self.last_download_metadata: dict[str, str] = {}
+        # Liste de TOUS les titres telecharges dans la batch courante
+        # (alimentee par les lignes "Track Name ==" du sous-process Zotify).
+        # Sert a peupler la page Success en mode multi-DL parallele.
+        self.batch_track_titles: list[str] = []
+        self.batch_track_artists: list[str] = []
         self.batch_convert_stats: dict[str, int] = {"total": 0, "converted": 0, "failed": 0}
         self.current_cover_image: ctk.CTkImage | None = None
         self.dl_progress_current: int = 0
@@ -490,40 +511,121 @@ class ZotifyGUI(ctk.CTk):
         else:
             subprocess.Popen(["xdg-open", str(path)])
 
+    def _format_track_titles_preview(self, titles: list[str], max_visible: int = 3) -> str:
+        """Resume une liste de titres pour affichage compact dans la page Success."""
+        if not titles:
+            return ""
+        visible = titles[:max_visible]
+        remaining = len(titles) - len(visible)
+        text = ", ".join(visible)
+        if remaining > 0:
+            text += f"  +{remaining} autre{'s' if remaining > 1 else ''}"
+        return text
+
     def _animate_success_page(self) -> None:
         self.anim_canvas.delete("all")
-        
-        is_batch = self.batch_convert_stats["total"] > 1
+
+        # === Detection du type de batch =====================================
+        # n_dl_processes : nb de subprocess Zotify qui ont tourne dans cette
+        #                  batch (= nb d'URLs distinctes telechargees).
+        # n_files        : nb total de fichiers ecrits sur disque.
+        # n_titles       : nb de titres distincts captes via "Track Name ==".
+        n_dl_processes = len(self.last_dl_exit_codes)
+        n_dl_ok = sum(1 for code in self.last_dl_exit_codes.values() if code == 0)
+        n_files = len(self.all_downloaded_paths)
+        n_titles = len(self.batch_track_titles)
         n_dl_failed = len(self.failed_tracks)
-        
-        if is_batch:
-            n_total = self.batch_convert_stats["total"]
-            n_ok = self.batch_convert_stats["converted"]
-            n_fail = self.batch_convert_stats["failed"]
-            self.success_title.configure(text="Playlist Téléchargée \u0026 Convertie")
-            subtitle_parts = [f"{n_ok}/{n_total} morceaux convertis en {self._conversion_label()}"]
-            if n_fail > 0:
-                subtitle_parts.append(f"({n_fail} échec{'s' if n_fail > 1 else ''} ffmpeg)")
+
+        is_multi_dl     = n_dl_processes > 1
+        is_playlist     = (not is_multi_dl) and (n_files > 1 or n_titles > 1
+                                                 or self.batch_convert_stats["total"] > 1)
+        # else : single track / single URL
+
+        fmt_label = self._conversion_label()
+        n_conv_total = self.batch_convert_stats["total"]
+        n_conv_ok    = self.batch_convert_stats["converted"]
+        n_conv_fail  = self.batch_convert_stats["failed"]
+
+        # ----- CAS A : telechargements PARALLELES (N URLs distinctes) --------
+        if is_multi_dl:
+            self.success_title.configure(
+                text=f"{n_dl_ok}/{n_dl_processes} téléchargements terminés"
+            )
+            subtitle_bits = []
+            if n_titles:
+                subtitle_bits.append(
+                    f"{n_titles} morceau{'x' if n_titles > 1 else ''} en {fmt_label}"
+                )
+            elif n_conv_total:
+                subtitle_bits.append(f"{n_conv_ok}/{n_conv_total} fichiers convertis en {fmt_label}")
+            if n_conv_fail > 0:
+                subtitle_bits.append(f"({n_conv_fail} échec{'s' if n_conv_fail > 1 else ''} ffmpeg)")
             if n_dl_failed > 0:
-                subtitle_parts.append(f"- {n_dl_failed} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify")
+                subtitle_bits.append(
+                    f"- {n_dl_failed} indispo{'s' if n_dl_failed > 1 else ''} sur Spotify"
+                )
+            self.success_subtitle.configure(text=" ".join(subtitle_bits))
+
+            # Zone preview : on resume la batch en mode "X morceaux"
+            preview_title = (
+                f"{n_titles} morceau{'x' if n_titles > 1 else ''} téléchargé{'s' if n_titles > 1 else ''}"
+                if n_titles else
+                f"{n_dl_ok} téléchargement{'s' if n_dl_ok > 1 else ''}"
+            )
+            self.success_track_title.configure(text=preview_title)
+
+            unique_artists = list(dict.fromkeys(self.batch_track_artists))
+            if len(unique_artists) == 1:
+                preview_artist = unique_artists[0]
+            elif len(unique_artists) == 0:
+                preview_artist = "Multi-artistes"
+            elif len(unique_artists) <= 3:
+                preview_artist = ", ".join(unique_artists)
+            else:
+                preview_artist = f"{', '.join(unique_artists[:3])} +{len(unique_artists) - 3} autres"
+            self.success_track_artist.configure(text=preview_artist)
+
+            # Affiche la liste des titres dans le champ "album" (truncated)
+            self.success_track_album.configure(
+                text=self._format_track_titles_preview(self.batch_track_titles)
+            )
+
+        # ----- CAS B : 1 URL contenant N morceaux (album / playlist) ---------
+        elif is_playlist:
+            n_total = max(n_conv_total, n_titles, n_files)
+            self.success_title.configure(text="Playlist Téléchargée \u0026 Convertie")
+            subtitle_parts = [f"{n_conv_ok}/{n_total} morceaux convertis en {fmt_label}"]
+            if n_conv_fail > 0:
+                subtitle_parts.append(f"({n_conv_fail} échec{'s' if n_conv_fail > 1 else ''} ffmpeg)")
+            if n_dl_failed > 0:
+                subtitle_parts.append(
+                    f"- {n_dl_failed} indispo{'s' if n_dl_failed > 1 else ''} sur Spotify"
+                )
             self.success_subtitle.configure(text=" ".join(subtitle_parts))
-            self.success_track_title.configure(text=self.last_download_metadata.get("title", f"{n_total} morceaux"))
+            self.success_track_title.configure(
+                text=self.last_download_metadata.get("title", f"{n_total} morceaux")
+            )
             self.success_track_artist.configure(text=self.last_download_metadata.get("artist", ""))
             self.success_track_album.configure(text=self.last_download_metadata.get("album", ""))
+
+        # ----- CAS C : 1 morceau, 1 URL --------------------------------------
         else:
             self.success_title.configure(text="Téléchargement \u0026 Conversion Terminés")
             if n_dl_failed > 0:
                 self.success_subtitle.configure(
-                    text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} indisponible{'s' if n_dl_failed > 1 else ''} sur Spotify"
+                    text=f"{n_dl_failed} morceau{'x' if n_dl_failed > 1 else ''} indispo{'s' if n_dl_failed > 1 else ''} sur Spotify"
                 )
             else:
                 self.success_subtitle.configure(text="")
-            title = self.last_download_metadata.get("title", "Titre Inconnu")
-            artist = self.last_download_metadata.get("artist", "Artiste Inconnu")
-            album = self.last_download_metadata.get("album", "Album Inconnu")
-            self.success_track_title.configure(text=title)
-            self.success_track_artist.configure(text=artist)
-            self.success_track_album.configure(text=album)
+            self.success_track_title.configure(
+                text=self.last_download_metadata.get("title", "Titre Inconnu")
+            )
+            self.success_track_artist.configure(
+                text=self.last_download_metadata.get("artist", "Artiste Inconnu")
+            )
+            self.success_track_album.configure(
+                text=self.last_download_metadata.get("album", "Album Inconnu")
+            )
         
         if n_dl_failed > 0:
             self.failed_header.configure(
@@ -1307,7 +1409,13 @@ class ZotifyGUI(ctk.CTk):
         for key, pattern in patterns.items():
             match = re.search(pattern, msg)
             if match:
-                self.last_download_metadata[key] = match.group(1).strip()
+                value = match.group(1).strip()
+                self.last_download_metadata[key] = value
+                # Accumule la liste pour la page Success en mode multi-DL
+                if key == "title" and value and value not in self.batch_track_titles:
+                    self.batch_track_titles.append(value)
+                elif key == "artist" and value and value not in self.batch_track_artists:
+                    self.batch_track_artists.append(value)
 
     def _update_download_progress(self) -> None:
         """Update the progress bar and counter label with current download progress."""
@@ -2014,9 +2122,13 @@ class ZotifyGUI(ctk.CTk):
             self.settings_info.configure(text=f"Erreur sauvegarde : {exc}", text_color="#E22134")
             self._append_console(f"Erreur sauvegarde paramètres: {exc}\n")
 
-    def _build_cli_args(self) -> list[str]:
+    def _build_cli_args(self, query_override: str | None = None) -> list[str]:
         args = self._build_base_cli_args()
-        query = self.query_entry.get().strip()
+        query = (
+            query_override
+            if query_override is not None
+            else self.query_entry.get().strip()
+        )
 
         if self.persist_var.get():
             args.append("--persist")
@@ -2027,43 +2139,216 @@ class ZotifyGUI(ctk.CTk):
 
         return args
 
-    def run_command(self) -> None:
-        if self.current_process is not None:
-            self._append_console("Un telechargement est deja en cours.\n")
+    # =====================================================================
+    # GESTION DES TELECHARGEMENTS PARALLELES
+    #
+    # Architecture :
+    #   * `auth_process`         : login/logout, strictement exclusif.
+    #   * `active_downloads`     : dict {dl_id -> Popen}, jusqu'a
+    #                              MAX_PARALLEL_DOWNLOADS simultanes.
+    #   * `download_queue`       : deque[(url, command)] pour les
+    #                              demandes en surnombre, traitee FIFO
+    #                              au fur et a mesure que les workers
+    #                              se liberent.
+    #   * `_dl_lock`             : protege les structures ci-dessus.
+    #
+    # Signal a base d'`__DOWNLOAD_DONE__:{id}:{exit_code}` envoye par
+    # chaque worker quand il termine, capture par `_drain_output_queue`.
+    # =====================================================================
+
+    def _is_batch_idle(self) -> bool:
+        """True quand aucun telechargement n'est actif ni en file."""
+        with self._dl_lock:
+            return not self.active_downloads and not self.download_queue
+
+    def _dl_status_text(self) -> str:
+        n_active = len(self.active_downloads)
+        n_queued = len(self.download_queue)
+        if n_active == 0 and n_queued == 0:
+            return "Pret"
+        parts = []
+        if n_active:
+            parts.append(
+                f"{n_active} telechargement{'s' if n_active > 1 else ''} en cours"
+            )
+        if n_queued:
+            parts.append(f"{n_queued} en file")
+        return "  |  ".join(parts)
+
+    def run_command(self, url_override: str | None = None) -> None:
+        """Lance un nouveau telechargement.
+
+        Peut etre appele plusieurs fois consecutivement : les demandes
+        excedant ``MAX_PARALLEL_DOWNLOADS`` sont mises en file et
+        demarrees automatiquement quand un slot se libere.
+        """
+        if self.auth_process is not None:
+            self._append_console(
+                "Action impossible : login/logout en cours.\n"
+            )
             return
 
+        url = (
+            url_override
+            if url_override is not None
+            else self.query_entry.get().strip()
+        )
+        if not url:
+            self._append_console("Aucune URL/requete fournie.\n")
+            return
+
+        fresh_batch = self._is_batch_idle()
+        if fresh_batch:
+            self._reset_batch_state()
+
+        command = self._build_cli_args(query_override=url)
+
+        with self._dl_lock:
+            if len(self.active_downloads) < MAX_PARALLEL_DOWNLOADS:
+                self._launch_download_locked(url, command)
+            else:
+                self.download_queue.append((url, command))
+                self._append_console(
+                    f"[Queue] DL en file (position {len(self.download_queue)}) : {url}\n"
+                )
+
+        self._update_dl_ui_state()
+
+    def _reset_batch_state(self) -> None:
+        """Reinitialise les compteurs / etat partages de la batch.
+
+        Appele uniquement quand on commence une nouvelle batch de
+        telechargements (aucun actif, aucun en file). Sinon les nouveaux
+        downloads s'agregent a la batch en cours.
+        """
         self.current_action = "download"
         self.current_mode = "url"
         self.last_process_exit_code = None
         self.last_downloaded_path = None
         self.all_downloaded_paths = []
         self.last_download_metadata = {}
+        self.batch_track_titles = []
+        self.batch_track_artists = []
         self.batch_convert_stats = {"total": 0, "converted": 0, "failed": 0}
         self.dl_progress_current = 0
         self.dl_progress_total = 0
         self.conv_progress_current = 0
         self.conv_progress_total = 0
         self.failed_tracks = []
+        self.last_dl_exit_codes = {}
         self.progress.configure(mode="indeterminate")
         self.progress.set(0)
         self.progress_counter.configure(text="")
-        command = self._build_cli_args()
-        self._start_subprocess(command, "Execution en cours...")
 
-    def _start_subprocess(self, command: list[str], status_text: str) -> None:
-        self._append_console(f"\n$ {' '.join(command)}\n")
-        self.status_label.configure(text=status_text, text_color="#22C55E")
-        self.progress.start()
-        self.run_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
-        self.nav_auth_button.configure(state="disabled")
-
-        thread = threading.Thread(target=self._run_subprocess, args=(command,), daemon=True)
+    def _launch_download_locked(self, url: str, command: list[str]) -> int:
+        """Demarre un subprocess de DL. DOIT etre appele sous _dl_lock."""
+        dl_id = self.next_dl_id
+        self.next_dl_id += 1
+        # Reserve le slot des maintenant (le vrai Popen est cree dans
+        # le thread, mais on veut compter ce DL comme actif des
+        # maintenant pour ne pas spammer plus que MAX en parallele).
+        self.active_downloads[dl_id] = None  # type: ignore[assignment]
+        self._append_console(f"\n[DL#{dl_id}] $ {' '.join(command)}\n")
+        thread = threading.Thread(
+            target=self._run_download_subprocess,
+            args=(dl_id, url, command),
+            name=f"ZotifyDL#{dl_id}",
+            daemon=True,
+        )
         thread.start()
+        return dl_id
+
+    def _run_download_subprocess(self, dl_id: int, url: str, command: list[str]) -> None:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        popen_kwargs: dict = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+            "env": env,
+        }
+        exit_code = -1
+        proc: subprocess.Popen | None = None
+        prefix = f"[DL#{dl_id}] "
+        try:
+            proc = subprocess.Popen(command, **popen_kwargs)
+            with self._dl_lock:
+                self.active_downloads[dl_id] = proc
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                # Les signaux internes (ZOTIFY_*) doivent rester intacts
+                # pour etre parses par _extract_download_metadata.
+                stripped = line.strip()
+                is_signal = stripped.startswith((
+                    "ZOTIFY_PROGRESS:",
+                    "ZOTIFY_DL_COMPLETE:",
+                    "ZOTIFY_DL_FAILED:",
+                    "ZOTIFY_CONV_PROGRESS:",
+                ))
+                self.output_queue.put(line if is_signal else (prefix + line))
+            exit_code = proc.wait()
+            self.output_queue.put(f"{prefix}Processus termine (code {exit_code}).\n")
+        except BaseException as exc:
+            self.output_queue.put(f"\n{prefix}Erreur de lancement : {exc}\n")
+        finally:
+            with self._dl_lock:
+                self.active_downloads.pop(dl_id, None)
+                self.last_dl_exit_codes[dl_id] = exit_code
+            self.output_queue.put(f"__DOWNLOAD_DONE__:{dl_id}:{exit_code}")
+
+    def _dispatch_next_from_queue(self) -> None:
+        """Demarre les DL de la file tant qu'il reste de la capacite.
+
+        Appele depuis le main loop apres chaque __DOWNLOAD_DONE__.
+        """
+        with self._dl_lock:
+            while (
+                self.download_queue
+                and len(self.active_downloads) < MAX_PARALLEL_DOWNLOADS
+            ):
+                url, command = self.download_queue.popleft()
+                self._launch_download_locked(url, command)
+
+    def _update_dl_ui_state(self) -> None:
+        """Met a jour le status / progress / boutons selon l'etat actuel."""
+        n_active = len(self.active_downloads)
+        n_queued = len(self.download_queue)
+        if n_active > 0 or n_queued > 0:
+            self.progress.configure(mode="indeterminate")
+            try:
+                self.progress.start()
+            except Exception:
+                pass
+            self.status_label.configure(
+                text=self._dl_status_text(),
+                text_color="#22C55E",
+            )
+            self.stop_button.configure(state="normal")
+            self.nav_auth_button.configure(state="disabled")
+            # On laisse le bouton "Lancer" ACTIF pour permettre d'empiler
+            # de nouvelles requetes sans rafraichir l'UI.
+            self.run_button.configure(state="normal")
+        else:
+            try:
+                self.progress.stop()
+            except Exception:
+                pass
+            self.status_label.configure(text="Pret", text_color="#9AA6B2")
+            self.run_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+            self.nav_auth_button.configure(state="normal")
+
+    # =====================================================================
+    # AUTH (login/logout) - reste strictement exclusif
+    # =====================================================================
 
     def login_spotify(self) -> None:
-        if self.current_process is not None:
-            self._append_console("Action impossible: un processus est deja en cours.\n")
+        if self.auth_process is not None or self.active_downloads:
+            self._append_console(
+                "Action impossible : telechargement(s) en cours.\n"
+            )
             return
         self.pending_oauth_url = None
         self.oauth_url_opened = False
@@ -2072,16 +2357,18 @@ class ZotifyGUI(ctk.CTk):
         self.current_action = "login"
         self.last_process_exit_code = None
         command = self._build_base_cli_args() + ["--login-only"]
-        self._start_subprocess(command, "Connexion Spotify...")
+        self._start_auth_subprocess(command, "Connexion Spotify...")
 
     def logout_spotify(self) -> None:
-        if self.current_process is not None:
-            self._append_console("Action impossible: un processus est deja en cours.\n")
+        if self.auth_process is not None or self.active_downloads:
+            self._append_console(
+                "Action impossible : telechargement(s) en cours.\n"
+            )
             return
         self.current_action = "logout"
         self.last_process_exit_code = None
         command = self._build_base_cli_args() + ["--logout"]
-        self._start_subprocess(command, "Deconnexion Spotify...")
+        self._start_auth_subprocess(command, "Deconnexion Spotify...")
 
     def toggle_spotify_auth(self) -> None:
         if self._resolve_credentials_path().exists():
@@ -2090,20 +2377,57 @@ class ZotifyGUI(ctk.CTk):
             self.login_spotify()
 
     def stop_command(self) -> None:
-        if self.current_process is not None and self.current_process.poll() is None:
-            self.current_process.kill()  # kill() instead of terminate() to ensure child threads die
-            try:
-                self.current_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            self._append_console("Arret force du processus.\n")
+        """Arret d'urgence : tue tous les telechargements + vide la file."""
+        # 1. Annule les downloads en file (jamais demarres)
+        with self._dl_lock:
+            n_cancelled = len(self.download_queue)
+            self.download_queue.clear()
+        if n_cancelled:
+            self._append_console(
+                f"[Stop] {n_cancelled} DL en file annule(s).\n"
+            )
 
-    def _run_subprocess(self, command: list[str]) -> None:
+        # 2. Kill tous les downloads actifs (snapshot pour ne pas muter
+        #    le dict pendant qu'on itere).
+        with self._dl_lock:
+            active_snapshot = list(self.active_downloads.items())
+        for dl_id, proc in active_snapshot:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                self._append_console(f"[Stop] DL#{dl_id} arrete.\n")
+
+        # 3. Auth process si actif
+        if self.auth_process is not None and self.auth_process.poll() is None:
+            try:
+                self.auth_process.kill()
+                self.auth_process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            self._append_console("[Stop] Auth process arrete.\n")
+
+    def _start_auth_subprocess(self, command: list[str], status_text: str) -> None:
+        self._append_console(f"\n$ {' '.join(command)}\n")
+        self.status_label.configure(text=status_text, text_color="#22C55E")
+        self.progress.configure(mode="indeterminate")
+        self.progress.start()
+        self.run_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.nav_auth_button.configure(state="disabled")
+        thread = threading.Thread(
+            target=self._run_auth_subprocess,
+            args=(command,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_auth_subprocess(self, command: list[str]) -> None:
         try:
-            # Force unbuffered output so subprocess prints reach the GUI immediately
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
-
             popen_kwargs: dict = {
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
@@ -2112,18 +2436,103 @@ class ZotifyGUI(ctk.CTk):
                 "bufsize": 1,
                 "env": env,
             }
-
-            self.current_process = subprocess.Popen(command, **popen_kwargs)
-            assert self.current_process.stdout is not None
-            for line in self.current_process.stdout:
+            self.auth_process = subprocess.Popen(command, **popen_kwargs)
+            assert self.auth_process.stdout is not None
+            for line in self.auth_process.stdout:
                 self.output_queue.put(line)
-            return_code = self.current_process.wait()
+            return_code = self.auth_process.wait()
             self.output_queue.put(f"\nProcessus termine (code {return_code}).\n")
         except BaseException as exc:
             self.output_queue.put(f"\nErreur de lancement: {exc}\n")
         finally:
-            self.current_process = None
-            self.output_queue.put("__PROCESS_DONE__")
+            self.auth_process = None
+            self.output_queue.put("__AUTH_DONE__")
+
+    # =====================================================================
+    # HANDLERS appeles par _drain_output_queue (main thread Tkinter)
+    # =====================================================================
+
+    def _on_download_done(self, msg: str) -> None:
+        """Un telechargement s'est termine. Format: ``__DOWNLOAD_DONE__:id:code``."""
+        try:
+            _, dl_id_s, exit_s = msg.split(":", 2)
+            exit_code = int(exit_s)
+        except (ValueError, IndexError):
+            return
+
+        # `last_process_exit_code` reste utilise par la success page ;
+        # on retient le code du DERNIER DL termine. Pour les decisions
+        # de batch on s'appuie sur ``last_dl_exit_codes``.
+        self.last_process_exit_code = exit_code
+
+        # Demarrer eventuellement le DL suivant en file
+        self._dispatch_next_from_queue()
+
+        if self._is_batch_idle():
+            self._finalize_batch()
+        else:
+            self._update_dl_ui_state()
+
+    def _on_auth_done(self) -> None:
+        try:
+            self.progress.stop()
+        except Exception:
+            pass
+        self.run_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self.nav_auth_button.configure(state="normal")
+        self.status_label.configure(text="Pret", text_color="#9AA6B2")
+        self._refresh_auth_status()
+        if self.login_flow_active:
+            self.login_flow_active = False
+            if self._resolve_credentials_path().exists():
+                if not self.login_success_detected:
+                    self.login_success_detected = True
+                self._show_login_success_popup()
+                self.show_page("Download")
+        self.current_action = "idle"
+        self.current_mode = ""
+
+    def _finalize_batch(self) -> None:
+        """Toute la batch (actifs + file) est terminee.
+
+        On declenche la conversion auto si au moins un DL a reussi
+        (au moins un exit_code == 0). Sinon on remet juste l'UI au
+        repos sans conversion.
+        """
+        any_success = any(
+            code == 0 for code in self.last_dl_exit_codes.values()
+        )
+        if not any_success:
+            self._update_dl_ui_state()
+            self.current_action = "idle"
+            self.current_mode = ""
+            return
+
+        fmt_label = self._conversion_label()
+        # UI : busy pendant la conversion
+        self.run_button.configure(state="disabled")
+        self.progress.configure(mode="determinate")
+        self.progress.set(0)
+        self.status_label.configure(
+            text=f"Preparation de la conversion {fmt_label}...",
+            text_color="#1DB954",
+        )
+        n_files = len(self.all_downloaded_paths)
+        n_dl = len(self.last_dl_exit_codes)
+        n_ok = sum(1 for c in self.last_dl_exit_codes.values() if c == 0)
+        if n_files >= 1:
+            self._append_console(
+                f"Batch terminee ({n_ok}/{n_dl} DL OK, "
+                f"{n_files} fichier{'s' if n_files > 1 else ''}). "
+                f"Conversion {fmt_label} (sweep complet du dossier)...\n"
+            )
+        else:
+            self._append_console(
+                "Aucun fichier capture dans la session. Sweep du dossier de "
+                "telechargement pour rattraper les fichiers orphelins...\n"
+            )
+        self._batch_convert()
 
     def _drain_output_queue(self) -> None:
         try:
@@ -2139,58 +2548,12 @@ class ZotifyGUI(ctk.CTk):
                     self.current_action = "idle"
                     self.current_mode = ""
                     continue
-                if msg == "__PROCESS_DONE__":
-                    self.progress.stop()
-                    self.run_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
-                    self.nav_auth_button.configure(state="normal")
-                    self.status_label.configure(text="Pret", text_color="#9AA6B2")
-                    self._refresh_auth_status()
-                    if self.login_flow_active:
-                        self.login_flow_active = False
-                        if self._resolve_credentials_path().exists():
-                            if not self.login_success_detected:
-                                self.login_success_detected = True
-                            self._show_login_success_popup()
-                            self.show_page("Download")
-                    should_auto_convert = (
-                        self.current_action == "download"
-                        and self.last_process_exit_code == 0
-                    )
-                    if should_auto_convert:
-                        fmt_label = self._conversion_label()
-                        # Keep the UI in "busy" state during conversion so the user
-                        # cannot launch a second download mid-conversion and the
-                        # progress bar/status stay informative.
-                        self.run_button.configure(state="disabled")
-                        self.progress.configure(mode="determinate")
-                        self.progress.set(0)
-                        self.status_label.configure(
-                            text=f"Preparation de la conversion {fmt_label}...",
-                            text_color="#1DB954",
-                        )
-                        n_files = len(self.all_downloaded_paths)
-                        if n_files >= 1:
-                            self._append_console(
-                                f"Telechargement termine ({n_files} fichier{'s' if n_files > 1 else ''}). "
-                                f"Conversion {fmt_label} (sweep complet du dossier)...\n"
-                            )
-                            self._batch_convert()
-                        else:
-                            # No downloads captured this session, but the user might still have
-                            # leftover .ogg files in the configured dir from a previous run.
-                            self._append_console(
-                                "Aucun fichier capture dans la session. Sweep du dossier de "
-                                "telechargement pour rattraper les fichiers orphelins...\n"
-                            )
-                            self._batch_convert()
-                    elif self.current_action == "download" and self.last_process_exit_code == 0:
-                        self.show_page("Success")
-                        self.current_action = "idle"
-                        self.current_mode = ""
-                    else:
-                        self.current_action = "idle"
-                        self.current_mode = ""
+                if msg.startswith("__DOWNLOAD_DONE__:"):
+                    self._on_download_done(msg)
+                    continue
+                if msg == "__AUTH_DONE__":
+                    self._on_auth_done()
+                    continue
                 else:
                     self._extract_download_metadata(msg)
                     exit_match = re.search(r"Processus termine \(code\s+(-?\d+)\)", msg)
@@ -2238,18 +2601,37 @@ class ZotifyGUI(ctk.CTk):
             self.after(100, self._drain_output_queue)
 
     def _on_close(self) -> None:
-        """Kill any running subprocess before closing the window."""
+        """Kill all running subprocesses (auth + downloads) before closing."""
+        # Stoppe le serveur HTTP local
         try:
             from zotify.gui_server import stop_server
             stop_server(getattr(self, "bridge_server", None))
         except Exception:
             pass
-        if self.current_process is not None and self.current_process.poll() is None:
-            self.current_process.kill()
+
+        # Vide la file de DL
+        with self._dl_lock:
+            self.download_queue.clear()
+
+        # Kill tous les DL actifs
+        with self._dl_lock:
+            active_snapshot = list(self.active_downloads.values())
+        for proc in active_snapshot:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+
+        # Kill l'auth process si actif
+        if self.auth_process is not None and self.auth_process.poll() is None:
             try:
-                self.current_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                self.auth_process.kill()
+                self.auth_process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
                 pass
+
         self.destroy()
 
     def trigger_download_from_url(self, url: str) -> tuple[bool, str]:
@@ -2257,12 +2639,15 @@ class ZotifyGUI(ctk.CTk):
         declencher un telechargement avec l'URL donnee. Renvoie
         ``(success, message)``.
 
+        Avec le mode parallele : ne refuse JAMAIS, met simplement en
+        file si MAX_PARALLEL_DOWNLOADS est deja atteint.
+
         Cette methode est invoquee depuis un thread serveur ; toute
         manipulation de widgets Tkinter doit imperativement passer
         par ``self.after(0, ...)`` pour s'executer sur le main loop.
         """
-        if self.current_process is not None:
-            return (False, "Un telechargement est deja en cours.")
+        if self.auth_process is not None:
+            return (False, "Login/logout Spotify en cours, reessaie dans un instant.")
 
         def _apply() -> None:
             try:
@@ -2274,14 +2659,19 @@ class ZotifyGUI(ctk.CTk):
                 self.show_page("Download")
             except Exception:
                 pass
-            self._append_console(f"\n[Bridge] Telechargement declenche depuis Spotify :\n  {url}\n")
+            self._append_console(f"\n[Bridge] Demande recue depuis Spotify :\n  {url}\n")
             try:
-                self.run_command()
+                self.run_command(url_override=url)
             except Exception as exc:
                 self._append_console(f"[Bridge] Echec lancement : {exc}\n")
 
         self.after(0, _apply)
-        return (True, "Telechargement mis en file.")
+
+        n_active = len(self.active_downloads)
+        n_queued = len(self.download_queue)
+        if n_active >= MAX_PARALLEL_DOWNLOADS:
+            return (True, f"Mis en file (position {n_queued + 1}).")
+        return (True, "Telechargement lance en parallele." if n_active else "Telechargement demarre.")
 
 
 def launch_gui() -> None:
