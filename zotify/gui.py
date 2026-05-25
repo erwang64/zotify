@@ -1418,20 +1418,22 @@ class ZotifyGUI(ctk.CTk):
                     self.batch_track_artists.append(value)
 
     def _update_download_progress(self) -> None:
-        """Update the progress bar and counter label with current download progress."""
+        """Update the progress bar during download.
+
+        Note : on n'affiche PAS de compteur "X/Y morceaux telecharges" car
+        avec les telechargements paralleles (plusieurs subprocess Zotify
+        actifs simultanement), les signaux ZOTIFY_PROGRESS de chaque process
+        ecrasent la valeur du precedent et le compteur affiche un nombre
+        totalement faux. Le bandeau de statut (_update_dl_ui_state) affiche
+        deja le nombre de DL actifs/en file, ce qui est l'info utile.
+        """
         if self.dl_progress_total > 0:
-            # Switch to determinate mode for real progress
             self.progress.configure(mode="determinate")
             fraction = self.dl_progress_current / self.dl_progress_total
             self.progress.set(fraction)
-            self.progress_counter.configure(
-                text=f"{self.dl_progress_current}/{self.dl_progress_total} morceaux téléchargés"
-            )
-            if self.dl_progress_current > 0:
-                self.status_label.configure(
-                    text=f"Téléchargement en cours ({self.dl_progress_current}/{self.dl_progress_total})",
-                    text_color="#1DB954"
-                )
+        # On purge tout texte residuel du compteur, qu'il ait ete pose par
+        # une ancienne version ou par la phase de conversion.
+        self.progress_counter.configure(text="")
 
     def _update_conv_progress(self) -> None:
         """Update the progress bar and counter label during audio conversion."""
