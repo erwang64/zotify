@@ -88,6 +88,23 @@ class ZotifyGUI(ctk.CTk):
         self.after(100, self._drain_output_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Demarre le mini serveur HTTP qui permet aux extensions
+        # (navigateur Spotify Web Player + Spicetify desktop)
+        # d'envoyer des URLs directement au GUI.
+        self.bridge_server = None
+        self.bridge_port: int | None = None
+        try:
+            from zotify.gui_server import start_server
+            self.bridge_server, self.bridge_port = start_server(self)
+            if self.bridge_port:
+                self._append_console(
+                    f"[Bridge] Serveur local actif sur http://127.0.0.1:{self.bridge_port}\n"
+                    f"[Bridge] Installe l'extension navigateur ou Spicetify pour\n"
+                    f"[Bridge] declencher les telechargements depuis Spotify.\n"
+                )
+        except Exception as exc:
+            self._append_console(f"[Bridge] Echec demarrage serveur local : {exc}\n")
+
     def _build_navbar(self) -> None:
         nav = ctk.CTkFrame(self, width=240, fg_color="#000000", corner_radius=0)
         nav.grid(row=0, column=0, sticky="nsew")
@@ -2222,6 +2239,11 @@ class ZotifyGUI(ctk.CTk):
 
     def _on_close(self) -> None:
         """Kill any running subprocess before closing the window."""
+        try:
+            from zotify.gui_server import stop_server
+            stop_server(getattr(self, "bridge_server", None))
+        except Exception:
+            pass
         if self.current_process is not None and self.current_process.poll() is None:
             self.current_process.kill()
             try:
@@ -2229,6 +2251,37 @@ class ZotifyGUI(ctk.CTk):
             except subprocess.TimeoutExpired:
                 pass
         self.destroy()
+
+    def trigger_download_from_url(self, url: str) -> tuple[bool, str]:
+        """Appele par le serveur HTTP local (extensions Spotify) pour
+        declencher un telechargement avec l'URL donnee. Renvoie
+        ``(success, message)``.
+
+        Cette methode est invoquee depuis un thread serveur ; toute
+        manipulation de widgets Tkinter doit imperativement passer
+        par ``self.after(0, ...)`` pour s'executer sur le main loop.
+        """
+        if self.current_process is not None:
+            return (False, "Un telechargement est deja en cours.")
+
+        def _apply() -> None:
+            try:
+                self.query_entry.delete(0, "end")
+                self.query_entry.insert(0, url)
+            except Exception:
+                pass
+            try:
+                self.show_page("Download")
+            except Exception:
+                pass
+            self._append_console(f"\n[Bridge] Telechargement declenche depuis Spotify :\n  {url}\n")
+            try:
+                self.run_command()
+            except Exception as exc:
+                self._append_console(f"[Bridge] Echec lancement : {exc}\n")
+
+        self.after(0, _apply)
+        return (True, "Telechargement mis en file.")
 
 
 def launch_gui() -> None:
