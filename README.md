@@ -1,431 +1,220 @@
-# Zotify
-
-## A highly customizable music and podcast downloader
+# Zotify — GUI 1.2.0
 
 <p align="center">
-  <img src="https://i.imgur.com/hGXQWSl.png" width="50%" alt="Zotify logo">
+  <img src="https://i.imgur.com/hGXQWSl.png" width="40%" alt="Zotify logo">
 </p>
 
-## Features
+**Zotify** est un téléchargeur de musique et podcasts Spotify hautement personnalisable.  
+Cette version met l’accent sur une **interface graphique moderne**, une **conversion audio de haute qualité**, et un **pont direct depuis Spotify** (navigateur ou app desktop) sans copier-coller d’URL.
 
-- Downloads at up to 320kbps \*
-- Downloads directly from the source \*\*
-- Downloads podcasts, playlists, liked songs, albums, artists, singles.
-- Downloads synced lyrics from the source
-- Option to download in real time to reduce suspicious API request behavior \*\*\*
-- Supports multiple audio formats
-- Download directly from URL or use built-in in search
-- Bulk downloads from a list of URLs in a text file or parsed directly as arguments
+| Version GUI | Extension navigateur | Pont local |
+|-------------|-------------------|------------|
+| **1.2.0**   | Zotify Bridge 1.2.0 | `127.0.0.1:43219` |
 
-\* Free accounts are limited to 160kbps \*\
-\*\* Audio files are NOT substituted with ones from other sources (such as YouTube or Deezer) \*\*\
-\*\*\* 'Real time' downloading limits at the speed of data transfer to typical streaming rates (download time ≈  duration of the track) \*\*\*
+Voir le détail des changements dans [CHANGELOG.md](CHANGELOG.md).
 
-## Dependencies
+---
 
-- Python 3.10 or greater
-- FFmpeg
+## Fonctionnalités (1.2.0)
 
-## Installation And Updating
+- Interface graphique sombre (CustomTkinter) avec console en direct
+- Téléchargement depuis une **URL**, une **recherche**, les **favoris**, **playlists**, **albums**, **artistes**
+- **Téléchargements parallèles** : plusieurs morceaux / URLs en même temps, avec file d’attente
+- **Téléchargement en un clic** depuis Spotify Web (extension navigateur)
+- **Téléchargement depuis l’app desktop** via Spicetify (menu contextuel + `Ctrl+Shift+D`)
+- Conversion automatique **WAV 24 bits** ou **MP3 320 kbps** avec métadonnées et pochette
+- Page de succès adaptée (1 morceau, playlist, ou batch parallèle)
 
-<details open><summary><strong>Install as Executable</strong></summary>
+---
 
-*Useable across system from the command line*
+## Prérequis
 
-`pipx install git+https://github.com/Googolplexed0/zotify.git`
+- **Python 3.10+**
+- **FFmpeg** installé et accessible dans le `PATH`
+- Compte Spotify (Premium recommandé pour la qualité maximale)
 
-</details>
+---
 
-<details><summary><strong>Install as Python Module</strong></summary>
+## Installation
 
-*Useable when launched as a Python module*
+### Module Python (recommandé)
 
-`python -m pip install git+https://github.com/Googolplexed0/zotify.git`
+```bash
+python -m pip install -e .
+```
 
-</details>
+Depuis le dépôt cloné, ou :
 
-<details><summary><strong>Updating</strong></summary>
+```bash
+python -m pip install git+https://github.com/Googolplexed0/zotify.git
+```
 
-*Update in accordance with your install method*
+### Exécutable global (pipx)
 
-**If Executable (pipx):**
-`pipx install -f git+https://github.com/Googolplexed0/zotify.git`
+```bash
+pipx install git+https://github.com/Googolplexed0/zotify.git
+```
 
-**If Module:**
-`python -m pip install --force-reinstall git+https://github.com/Googolplexed0/zotify.git`
+Instructions détaillées : [INSTALLATION.md](INSTALLATION.md).
 
-</details>
+---
 
-<details><summary><strong>Updating</strong></summary>
+## Lancer l’interface graphique
 
-*Update in accordance with your install method*
+```bash
+zotify-gui
+```
 
-**If Executable (pipx):**
-`pipx install -f git+https://github.com/Googolplexed0/zotify.git`
+ou :
 
-**If Module:**
-`python -m pip install --force-reinstall git+https://github.com/Googolplexed0/zotify.git`
+```bash
+python -m zotify --gui
+```
 
-</details>
+Au démarrage, le GUI affiche **v1.2.0** en bas de la barre latérale et démarre automatiquement le **serveur pont** sur `http://127.0.0.1:43219` (nécessaire pour les extensions).
 
-### Advanced Installation Instructions
+> **Important** : garde le GUI ouvert pendant que tu utilises l’extension navigateur ou Spicetify.
 
-See [INSTALLATION](INSTALLATION.md) for a more detailed and opinionated installation walkthrough.
+---
 
-## Usage
+## Utilisation rapide (GUI)
 
-`(python -m) zotify <track/album/playlist/episode/artist url>`
+1. Lance **`zotify-gui`** et connecte ton compte Spotify (onglet Authentification).
+2. Va dans **Téléchargement**, colle une URL Spotify (track, album, playlist) ou utilise le bouton depuis le navigateur (voir ci-dessous).
+3. Choisis le format de sortie dans **Paramètres** : **WAV** (24 bits) ou **MP3** (320 kbps).
+4. Clique **Lancer** — tu peux cliquer plusieurs fois sur « Télécharger » depuis Spotify : les jobs s’empilent et tournent en parallèle (dans la limite configurée).
+5. À la fin : page **Succès** avec le résumé (1 morceau, playlist, ou « X/Y téléchargements terminés »).
 
-Download track(s), album(s), playlist(s), podcast episode(s), or artist(s) specified by the URL(s) passed as a command line argument(s).
-If an artist's URL is given, all albums by the specified artist will be downloaded. Can take multiple URLs as multiple arguments.
+---
 
-### Basic Flags and Modes
+## Extension navigateur — Zotify Bridge
 
-`(python -m) zotify <{config flag} {config value}> <{mode flag}> <track/album/playlist/episode/artist url>`
+Permet de télécharger **directement depuis Spotify Web** (`open.spotify.com`) sans copier l’URL dans le GUI.
 
-| Command Line Config Flag (no value) | Function                                                                                                       |
-|-------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `-h`, `--help`                      | See this message                                                                                               |
-| `--version`                         | Show the version of Zotify                                                                                     |
-| `--persist`                         | Perform multiple Queries on the same Session, requiring only one account login                                 |
-| `--update-config`                   | Updates the `config.json` file while keeping all current settings unchanged                                    |
-| `--update-archive`                  | Updates the `.song_archive` file entries with full paths while keeping non-findable entries unchanged          |
-| `--debug`                           | Enable debug mode, printing extra information and creating a `config_DEBUG.json` file                          |
-| `--gui`                             | Launch the modern desktop interface                                                                              |
+### Prérequis
 
-## Graphical Interface
+- Le **GUI Zotify** doit être **lancé** sur la même machine.
+- Navigateur **Chrome**, **Edge**, **Brave**, **Opera** ou **Firefox**.
 
-Zotify now includes a modern desktop GUI with:
-- Dark mode and responsive layout
-- Embedded live console output
-- Quick mode selection (URLs, search, liked songs, playlists, artists, albums, verify library)
-- Built-in file picker for URL list files
+### Installation (Chrome / Edge / Brave / Opera)
 
-Launch options:
-- `(python -m) zotify --gui`
-- `zotify-gui`
+1. Ouvre la page des extensions :
+   - Chrome : `chrome://extensions`
+   - Edge : `edge://extensions`
+   - Brave : `brave://extensions`
+2. Active le **Mode développeur** (interrupteur en haut à droite).
+3. Clique **Charger l’extension non empaquetée** (ou équivalent).
+4. Sélectionne le dossier **`browser_extension/`** à la racine de ce dépôt.
+5. Épingle l’extension (icône puzzle → punaise) pour un accès rapide.
 
-| Command Line Config Flag            | Value                                                                                                          |
-|-------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `-c`, `--config-location`           | Specify a directory containing a Zotify `config.json` file (or a filepath to a `.json` file) to load settings  |
-| `-u`, `--username`                  | Account username                                                                                               |
-| `--token`                           | Authentication token                                                                                           |
-
-| Command Line Mode Flag (exclusive)  | Mode                                                                                                           |
-|-------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `-s`, `--search`                    | Search tracks/albums/artists/playlists based on passed argument (interactive)                                  |
-| `-p`, `--playlist`                  | Download playlist(s) created/saved by your account (interactive)                                               |
-| `-a`, `--artists`                   | Download all songs by followed artist(s) (interactive)                                                         |
-| `-m`, `--albums`                    | Download followed albums (interactive)                                                                         |
-| `-l`, `--liked`                     | Download all Liked Songs on your account                                                                       |
-| `-f`, `--file`                      | Download all tracks/albums/episodes/playlists URLs within the file passed as argument                          |
-| `-v`, `--verify-library`            | Check metadata for all tracks in ROOT_PATH or listed in SONG_ARCHIVE, updating the metadata if necessary       |
-
-<details><summary>
-
-### Advanced Usage and Config Flags
-
-</summary>
-
-All options can be set via the commandline or in a [config.json file](#configuration-files). Commandline arguments take priority over config.json arguments.  
-Set arguments in the commandline like this: `-ie False` or `--codec mp3`. Wrap commandline arguments containing spaces or non-alphanumeric characters (weird symbols) with quotes like this: `--output-liked-songs "Liked Songs/{song_name}"`. Make sure to escape any backslashes (`\`) to prevent string-escape errors.
-
-| Main Options                 | Command Line Config Flag            | Description                                                                  | Default Value             |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------|---------------------------|
-| `ROOT_PATH`                  | `-rp`, `--root-path`                | Directory where music is saved (replaces `.` in other path configs)          | `~/Music/Zotify Music`    |
-| `SAVE_CREDENTIALS`           | `--save-credentials`                | Whether login credentials should be saved                                    | True                      |
-| `CREDENTIALS_LOCATION`       | `--creds`, `--credentials-location` | Directory/Filepath to store/load a Zotify `credentials.json` file | See [Path Option Parser](#path-option-parser) |
-
-| File Options                 | Command Line Config Flag            | Description                                                                  | Default Value             |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------|---------------------------|
-| `OUTPUT`                     | `--output`                          | Master output file pattern (overwrites all others)    | See [Output Format Examples](#output-formatting) |
-| `OUTPUT_SINGLE`              | `-os`, `--output-single`            | Output file pattern for single tracks             | See [Output Format Examples](#example-output-values) |
-| `OUTPUT_ALBUM`               | `-oa`, `--output-album`             | Output file pattern for albums                    | See [Output Format Examples](#example-output-values) |
-| `OUTPUT_PLAYLIST_EXT`        | `-oe`, `--output-ext-playlist`      | Output file pattern for playlists                 | See [Output Format Examples](#example-output-values) |
-| `OUTPUT_LIKED_SONGS`         | `-ol`, `--output-liked-songs`       | Output file pattern for user's Liked Songs        | See [Output Format Examples](#example-output-values) |
-| `ROOT_PODCAST_PATH`          | `-rpp`, `--root-podcast-path`       | Directory where podcasts are saved                                           | `~/Music/Zotify Podcasts` |
-| `SPLIT_ALBUM_DISCS`          | `--split-album-discs`               | Saves each disc of an album into its own subfolder                           | False                     |
-| `MAX_FILENAME_LENGTH`        | `--max-filename-length`             | Maximum character length of filenames, truncated to fit, 0 meaning no limit  | 0                         |
-
-| Download Options             | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `OPTIMIZED_DOWNLOADING`      | `--optimized-downloading`           | Whether to sort download order by item duration to reduce API ratelimiting               | True          |
-| `DOWNLOAD_RATE_LIMITER`      | `-dlr`, `--download-rate-limiter`   | Slowdown multiplier based on the item's REAL_TIME_PLAY duration, 0 meaning disabled      | 0.0           |
-| `BULK_WAIT_TIME`             | `--bulk-wait-time`                  | The wait time between track downloads, in seconds                                        | 1.0           |
-| `TEMP_DOWNLOAD_DIR`          | `-td`, `--temp-download-dir`        | Directory where tracks are temporarily downloaded first, `""` meaning disabled           | `""`          |
-
-| Album/Artist Options         | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `DOWNLOAD_PARENT_ALBUM`      | `--download-parent-album`           | Download a track's parent album, including itself (uses `OUTPUT_ALBUM` file pattern)     | False         |
-| `NO_COMPILATION_ALBUMS`      | `--no-compilation-albums`           | Skip downloading an album if API metadata labels it a compilation (not recommended)      | False         |
-| `NO_VARIOUS_ARTISTS`         | `--no-various-artists`              | Skip downloading an album if the album's artist is "`Various Artists`"                   | False         |
-| `NO_ARTIST_APPEARS_ON`       | `--no-artist-appears-on`            | Skip album from an artist's discography if artist only "appears on" the album            | False         |
-| `DISCOG_BY_ALBUM_ARTIST`     | `--discog-by-album-artist`          | Skip album from an artist's discography unless the artist is the album's artist          | False         |
-
-| Regex Options                | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `REGEX_ENABLED`              | `--regex-enabled`                   | Enable Regular Expression filtering on item titles                                       | False         |
-| `REGEX_TRACK_SKIP`           | `--regex-track-skip`                | Regex pattern for skipping tracks, `""` meaning disabled                                 | `""`          |
-| `REGEX_ALBUM_SKIP`           | `--regex-album-skip`                | Regex pattern for skipping albums, `""` meaning disabled                                 | `""`          |
-
-| Encoding Options             | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `DOWNLOAD_FORMAT`            | `--codec`, `--download-format`      | Audio codec, copy avoids remuxing (aac, fdk_aac, mp3, ogg, opus, vorbis)                 | copy          |
-| `DOWNLOAD_QUALITY`           | `-q`, `--download-quality`          | Source audio quality, auto selects highest available (normal, high, very_high\*)         | auto          |
-| `TRANSCODE_BITRATE`          | `-b`, `--bitrate`                   | Overwrite the bitrate for FFMPEG encoding (NOT RECOMMENDED)                              |               |
-| `CUSTOM_FFMEPG_ARGS`         | `--custom-ffmpeg-args`              | Additional FFMPEG functions or filters to apply to downloaded audio (space delimited)    |  `""`         |
-
-| Archive Options              | Command Line Config Flag            | Description                                                                  | Default Value             |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------|---------------------------|
-| `SONG_ARCHIVE_LOCATION`      | `--song-archive-location`           | Directory for storing a global song_archive file         | See [Path Option Parser](#path-option-parser) |
-| `DISABLE_SONG_ARCHIVE`       | `--disable-song-archive`            | Disable global song_archive for `SKIP_PREVIOUSLY_DOWNLOADED` checks (NOT RECOMMENDED)   | False          |
-| `DISABLE_DIRECTORY_ARCHIVES` | `--disable-directory-archives`      | Disable local song_archive in download directories                                      | False          |
-| `SKIP_EXISTING`              | `-ie`, `--skip-existing`            | Skip songs already present in the expected output directory                             | True           |
-| `SKIP_PREVIOUSLY_DOWNLOADED` | `-ip`, `--skip-prev-downloaded`     | Use the global song_archive file to skip previously downloaded songs                    | False          |
-
-| Playlist File Options        | Command Line Config Flag            | Description                                                                  | Default Value             |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------|---------------------------|
-| `EXPORT_M3U8`                | `-e`, `--export-m3u8`               | Export tracks/albums/episodes/playlists with an accompanying .m3u8 file      | False                     |
-| `M3U8_LOCATION`              | `--m3u8-location`                   | Directory where .m3u8 files are saved, `""` being the output directory       | `""`                      |
-| `OUTPUT_M3U8`                | `-om`, `--output-m3u8`              | Output file pattern for Container .m3u8 files, `""` being the Query default  | `{name}`                  |
-| `M3U8_REL_PATHS`             | `--m3u8-relative-paths`             | List .m3u8 track paths relative to the .m3u8 file's directory                | True                      |
-| `LIKED_SONGS_ARCHIVE_M3U8`   | `--liked-songs-archive-m3u8`        | Use cumulative/archiving method when exporting .m3u8 file for Liked Songs    | True                      |
-
-| Lyrics Options               | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `LYRICS_TO_METADATA`         | `--lyrics-to-metadata`              | Whether lyrics should be fetched and written to audio file tag metadata                  | True          |
-| `LYRICS_TO_FILE`             | `--lyrics-to-file`                  | Whether lyrics should be fetched and written to a .lrc file                              | True          |
-| `LYRICS_LOCATION`            | `--lyrics-location`                 | Directory where .lrc files are saved, `""` being the output directory                    | `""`          |
-| `OUTPUT_LYRICS`              | `-oy`, `--output-lyrics`            | Output file pattern for .lrc files, `""` being the Track's output pattern  | See [Output Format Examples](#example-output-values) |
-| `ALWAYS_CHECK_LYRICS`        | `--always-check-lyrics`             | Always download a song's lyrics, even when skipped (unless `OPTIMIZED_DOWNLOADING`)      | False         |
-| `LYRICS_MD_HEADER`           | `--lyrics-md-header`                | Include track metadata to a .lrc file([see tags here](https://en.wikipedia.org/wiki/LRC_(file_format)#Core_format)) at the start of a .lrc file | False                     |
-
-| Metadata Options             | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `LANGUAGE`                   | `--language`                        | Language in which metadata/tags are requested                                            | en            |
-| `MD_DISC_TRACK_TOTALS`       | `--md-disc-track-totals`            | Whether track totals and disc totals should be saved in metadata                         | True          |
-| `MD_SAVE_GENRES`             | `--md-save-genres`                  | Whether genres should be saved in metadata                                               | True          |
-| `MD_ALLGENRES`               | `--md-allgenres`                    | Save all relevant genres in metadata                                                     | False         |
-| `MD_GENREDELIMITER`          | `--md-genredelimiter`               | Delimiter character to split genres in metadata, use `""` if array-like tags desired     | `", "`        |
-| `MD_ARTISTDELIMITER`         | `--md-artistdelimiter`              | Delimiter character to split artists in metadata, use `""` if array-like tags desired    | `", "`        |
-| `SEARCH_QUERY_SIZE`          | `--search-query-size`               | Number of items to fetch per category when performing a search                           | 10            |
-| `STRICT_LIBRARY_VERIFY`      | `--strict-library-verify`           | Whether unreliable tags should be forced to match when verifying local library           | True          |
-| `ALBUM_ART_JPG_FILE`         | `--album-art-jpg-file`              | Save album art as a separate .jpg file                                                   | False         |
-
-| API Options                  | Command Line Config Flag            | Description                                                                  | Default Value             |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------|---------------------------|
-| `API_CLIENT_ID`              | `--client-id`                       | Client ID for a Developer App to route metadata API requests through         | `""`                      |
-| `API_CLIENT_LEGACY`          | `--client-legacy`                   | Whether the Developer App can access legacy endpoints\*\*                    | True                      |
-| `RETRY_ATTEMPTS`             | `--retry-attempts`                  | Number of times to retry failed API requests                                 | 1                         |
-| `CHUNK_SIZE`                 | `--chunk-size`                      | Chunk size for downloading                                                   | 20000                     |
-| `REDIRECT_ADDRESS`           | `--redirect-address`                | Local callback point for OAuth login requests (port is handled internally)   | 127.0.0.1                 |
-
-| Terminal & Logging Options   | Command Line Config Flag            | Description                                                                              | Default Value |
-|------------------------------|-------------------------------------|------------------------------------------------------------------------------------------|---------------|
-| `PRINT_SPLASH`               | `--print-splash`                    | Show the Zotify logo at startup                                                          | False         |
-| `PRINT_PROGRESS_INFO`        | `--print-progress-info`             | Show message contianing download progress information                                    | True          |
-| `PRINT_SKIPS`                | `--print-skips`                     | Show message when a track is skipped                                                     | True          |
-| `PRINT_DOWNLOADS`            | `--print-downloads`                 | Show message when a track is downloaded successfully                                     | True          |
-| `PRINT_DOWNLOAD_PROGRESS`    | `--print-download-progress`         | Show track download progress bar                                                         | True          |
-| `PRINT_URL_PROGRESS`         | `--print-url-progress`              | Show url progress bar                                                                    | True          |
-| `PRINT_ALBUM_PROGRESS`       | `--print-album-progress`            | Show album progress bar                                                                  | True          |
-| `PRINT_ARTIST_PROGRESS`      | `--print-artist-progress`           | Show artist progress bar                                                                 | True          |
-| `PRINT_PLAYLIST_PROGRESS`    | `--print-playlist-progress`         | Show playlist progress bar                                                               | True          |
-| `PRINT_WARNINGS`             | `--print-warnings`                  | Show warnings                                                                            | True          |
-| `PRINT_ERRORS`               | `--print-errors`                    | Show errors                                                                              | True          |
-| `PRINT_API_ERRORS`           | `--print-api-errors`                | Show API errors                                                                          | True          |
-| `STANDARD_INTERFACE`         | `--standard-interface`              | Silence all non-mandatory prints and loaders, instead show a standardized dashboard      | False         |
-| `FFMPEG_LOG_LEVEL`           | `--ffmpeg-log-level`                | FFMPEG's logged level of detail when completing a transcoded download                    | error         |
-
-**\* very_high (320k) is limited to Premium accounts only**
-
-**\*\* Developer Apps created before 2026-02 *may* be legacy**
-
-</details>
-
-## Configuration Files
-
-Using the `-c` (`--config-location`) flag does not set an alternate config location permanently. Alternate config locations must be specified in the command line each time Zotify is run. When unspecified, the configuration file will be read from and saved to the following default locations based on your operating system:
-
-| OS              | Location                                                           |
-|-----------------|--------------------------------------------------------------------|
-| Windows         | `C:\Users\<USERNAME>\AppData\Roaming\Zotify\config.json`           |
-| MacOS           | `/Users/<USERNAME>/Library/Application Support/Zotify/config.json` |
-| Linux           | `/home/<USERNAME>/.config/zotify/config.json`                      |
-
-To log out, just remove the configuration file and credentials file. Uninstalling Zotify does ***not*** remove either.
-
-## Path Option Parser
-
-All pathing-related options (`CREDENTIALS_LOCATION`, `ROOT_PODCAST_PATH`, `TEMP_DOWNLOAD_DIR`, `SONG_ARCHIVE_LOCATION`, `M3U8_LOCATION`, `LYRICS_LOCATION`) accept absolute paths.
-They will substitute an initial `"."` with `ROOT_PATH` and properly expand both `"~"` & `"~user"` constructs.
-
-The options `CREDENTIALS_LOCATION` and `SONG_ARCHIVE_LOCATION` use the following default locations depending on operating system:
-
-| OS              | Location                                                |
-|-----------------|---------------------------------------------------------|
-| Windows         | `C:\Users\<USERNAME>\AppData\Roaming\Zotify\`           |
-| MacOS           | `/Users/<USERNAME>/Library/Application Support/Zotify/` |
-| Linux           | `/home/<USERNAME>/.local/share/zotify/`                 |
-
-## Output Formatting
+### Installation (Firefox)
 
-With the option `OUTPUT` (or the commandline parameter `--output`) you can specify the pattern for the file structure of downloaded tracks (not podcasts).
-The value is relative to the `ROOT_PATH` directory and may contain the following placeholders (`ITEMTYPE` may be `track`, `album`, `artist`, or `playlist`):
+1. Ouvre `about:debugging#/runtime/this-firefox`.
+2. **Charger un module complémentaire temporaire…**
+3. Choisis le fichier **`browser_extension/manifest.json`**.
 
-| Placeholder                            | Description                                                  |
-|----------------------------------------|--------------------------------------------------------------|
-| `{id}`                                 | The downloaded track's id                                    |
-| `{name}`                               | The downloaded track's name                                  |
-| `{artist}` / `{artists}`               | The downloaded track's artist(s)                             |
-| `{date}` / `{year}`                    | The downloaded track's release date/year                     |
-| `{track_number}` / `{disc_number}`     | The downloaded track's track/disc number                     |
-| `{eac}` / `{isrc}` / `{upc}`           | The downloaded track's EAC/ISRC/UPC code                     |
-| `{album}`                              | The album's name                                             |
-| `{album_artist}` / `{album_artists}`   | The album's artist(s)                                        |
-| `{playlist}`                           | (playlist only) The playlist's name                          |
-| `{playlist_num}`                       | (playlist only) Incrementing item number                     |
-| `{ITEMTYPE_id}`                        | (only when item relevant) The specific item's id             |
-| `{ITEMTYPE_name}`                      | (only when item relevant) The specific item's name           |
+> Sur Firefox, l’extension en mode développeur est **temporaire** (à recharger après chaque redémarrage du navigateur), sauf si tu la packages en `.xpi` signé.
 
-### Example Output Values
+### Utilisation
 
-`OUTPUT_SINGLE`         :   `{artist}/{album}/{artist}_{song_name}`
+1. Lance **`zotify-gui`** et vérifie dans la console qu’un message du type  
+   `[Bridge] Serveur local actif sur http://127.0.0.1:43219` apparaît.
+2. Ouvre Spotify dans le navigateur :  
+   `https://open.spotify.com/track/...`  
+   ou `/album/...`, `/playlist/...`
+3. Un bouton vert **« Zotify »** (ou **« Télécharger via Zotify »** en mode flottant) apparaît :
+   - **Inline** : dans la barre d’actions, à côté du bouton Lecture (cas le plus courant).
+   - **Flottant** : en haut à droite si Spotify a changé sa mise en page et l’injection inline échoue.
+4. Clique le bouton → un toast confirme *« Téléchargement lancé dans Zotify »* et le GUI passe à l’écran de téléchargement.
+5. Tu peux enchaîner plusieurs morceaux : chaque clic ajoute un job (parallèle + file).
 
-`OUTPUT_ALBUM`          :   `{album_artist}/{album}/{album_num}_{artist}_{song_name}`
+**Popup de l’extension** (clic sur l’icône) : état de connexion au GUI, nombre de téléchargements **actifs** et **en file**.
 
-`OUTPUT_PLAYLIST_EXT`   :   `{playlist}/{playlist_num}_{artist}_{song_name}`
+### Dépannage extension
 
-`OUTPUT_LIKED_SONGS`    :   `Liked Songs/{artist}_{song_name}`
+| Problème | Solution |
+|----------|----------|
+| *Zotify GUI introuvable* | Lance `zotify-gui` ; vérifie qu’aucun pare-feu ne bloque `127.0.0.1`. |
+| Bouton invisible | Ouvre une page **track**, **album** ou **playlist** (pas la page d’accueil ni un artiste seul). |
+| Téléchargement ignoré | Le GUI peut être occupé par une **authentification** en cours — termine le login d’abord. |
+| Erreurs techniques | `F12` → Console ; logs côté GUI dans la console intégrée. |
 
-`OUTPUT_LYRICS`         :   `{artist}_{song_name}`
+Documentation complémentaire : [browser_extension/README.md](browser_extension/README.md).
 
-## M3U8 File Output Formatting
+### Sécurité
 
-With the option `OUTPUT_M3U8` (or the commandline parameter `--output-m3u8`) you can specify the pattern for the filename of Container playlist files. Unlike [Output Formatting](#output-formatting), this value cannot include subdirectories (no `/` or `\`) but may contain the following placeholders:
+L’extension **n’envoie rien sur Internet**. Elle lit uniquement l’URL de la page (`location.href`) et appelle le serveur local sur **`127.0.0.1`**. Aucun cookie Spotify n’est lu.
 
-| Placeholder                            | Description                                                         |
-|----------------------------------------|---------------------------------------------------------------------|
-| `{content_type}`                       | The type of content the Container holds (`track`, `episode`, etc.)  |
-| `{id}`                                 | The Container's id                                                  |
-| `{name}`                               | The Container's name                                                |
-| `{owner_id}`                           | (playlist only) The playlist owner's id                             |
-| `{owner_name}`                         | (playlist only) The playlist owner's name                           |
-| `{snapshot_id}`                        | (playlist only) The playlist's snapshot id                          |
+---
 
-## Search Query Formatting
+## Extension Spotify Desktop (Spicetify)
 
-Searches (performed with either with the mode flag `-s` or no mode flag) can be filtered with the following general format:
+Pour l’**application Spotify Windows / macOS / Linux** avec [Spicetify](https://spicetify.app/) :
 
-`<search term(s)> <{filter tag} {filter value}>`
+- Menu contextuel **« Télécharger via Zotify »** sur tracks, albums, playlists
+- Raccourci **`Ctrl+Shift+D`** sur le morceau en cours de lecture
 
-Multiple filters can be stacked, with latter filters overwriting prior filters. **The `SEARCH_QUERY_SIZE` config will be overwritten by the `/limit` filter if it is set.**
+Guide d’installation : [spicetify_extension/README.md](spicetify_extension/README.md).
 
-### Supported Filters
+---
 
-| Filter Tag                  | Type       | Valid Values                                              | Default Value                    |
-|-----------------------------|------------|-----------------------------------------------------------|----------------------------------|
-| `/t`, `/type`               | `ITEMTYPE` | `track`, `album`, `artist`, `playlist`, `show`, `episode` | `track,album,artist,playlist`    |
-| `/s`, `/size`               | int        | 1 <= i <= 1000                                            | `SEARCH_QUERY_SIZE` Config       |
-| `/o`, `/offset`             | int        | 0 <= i <= 999                                             | 0                                |
-| `/ie`, `/include-external`  | bool       | True, False                                               | False                            |
+## Formats et métadonnées
 
-### Example Filtered Search Queries
+| Format | Codec / qualité | Métadonnées |
+|--------|-----------------|-------------|
+| **MP3** | LAME 320 kbps, `compression_level 0` | ID3v2.3 + pochette APIC |
+| **WAV** | PCM 24 bits | ID3 dans le fichier + chunk RIFF `LIST/INFO` |
 
-Only Search for Playlists                    :   `Awesome Tunes /t playlist`
+**Windows Explorer** : l’explorateur Windows affiche rarement les tags WAV nativement ; les lecteurs comme **foobar2000**, **Rekordbox** ou **VLC** les lisent correctement.  
+Vérifier un fichier : `python check_wav_tags.py chemin/vers/fichier.wav`
 
-Search for Lots of Artists                   :   `Taylor /t artist /s 50`
+---
 
-Skip the First 100 Search Results            :   `LMFAO Party Rock /o 100`
+## Ligne de commande (CLI)
 
-Smaller Default Search, Including Podcasts   :   `Country /t track,album,artist,playlist,episode /s 5`
+Le CLI reste disponible pour les usages avancés :
 
-Search for Externally-Hosted Podcasts        :   `Life is Crazy Sometimes /t show /ie True /s 30`
+```bash
+zotify <url_spotify>
+zotify --help
+zotify --version
+```
 
-## Regex Formatting
+| Commande | Description |
+|----------|-------------|
+| `zotify --gui` | Lance l’interface graphique |
+| `zotify-gui` | Raccourci vers le GUI |
+| `zotify -l` | Morceaux likés |
+| `zotify -s "artiste"` | Recherche interactive |
 
-With `REGEX_ENABLED` (or the commandline parameter `--regex-enabled`) and its child config options, you can specify a Regex pattern for the titles of different items (tracks, albums, playlists, etc.) to be filtered against. To understand the Regex language and build/test your own, see [regex101](https://regex101.com/). Make sure to escape any backslashes `\` used in the Regex, as a `config.json` will not accept lone backslashes. **All Regex patterns/matches are case-insensitive**.
+Configuration : fichier `config.json` (emplacement selon l’OS — voir section Configuration dans la doc historique du projet).  
+Guide avancé des options CLI : parcourir les sections *Usage*, *Configuration* et *Flags* du dépôt d’origine ou [INSTALLATION.md](INSTALLATION.md).
 
-You can add multiple patterns into a single regex by chaining the "or" construction `|`, such as: `(:?<first pattern here>)|(:?<second pattern here>)|(:?<third pattern here>)`.
+---
 
-### Example Regex Values
+## Structure du projet
 
-Check for Live Performances   :   `^.*?\\(?(?:Live|Live (?:from|in|at) .*?)\\)?$`
+```
+zotify/                 # Code Python (GUI, CLI, serveur pont)
+browser_extension/      # Extension Chrome / Firefox (Zotify Bridge)
+spicetify_extension/    # Extension Spicetify (app desktop)
+check_wav_tags.py       # Diagnostic métadonnées WAV
+CHANGELOG.md            # Journal des versions GUI
+```
 
-## FFMPEG Argument Formatting
+---
 
-With `CUSTOM_FFMEPG_ARGS` (or the commandline parameter `--custom-ffmpeg-args`), you can specify additional audio processing functions to be applied to downloaded audio files. To understand available FFMPEG options and filtergraphs, see the [FFMPEG Documentation](https://ffmpeg.org/ffmpeg.html#Audio-Options) and [FFMPEG Filters Documentation](https://ffmpeg.org/ffmpeg-filters.html#Audio-Filters). Make sure to escape any extra quotes `"`, as the argument parser expects a single string of space-delimited key-value pairs.
+## Changelog
 
-### Example FFMPEG Argument Values
+Voir **[CHANGELOG.md](CHANGELOG.md)** pour l’historique complet (1.2.0, 1.1.0, …).
 
-Increase Volume by 50%                                :   `"-af volume=1.5"`
+---
 
-Decrease Volume by 50% for the First 30 Seconds       :   `"-af volume=0.5:enable='between(t,0,30)'"`
+## Avertissement
 
-Slow Audio Tempo to 60% (pitch/frequency unaffected)  :   `"-af atempo=0.6"`
+Zotify est destiné à un usage conforme au droit d’auteur, à des fins **éducatives**, **privées** et de **fair use**.  
+Les contributeurs ne sont pas responsables d’une utilisation abusive. Utilise un compte dédié et des volumes de téléchargement raisonnables.
 
-Increase Volume and Tempo by 50%                      :   `"-af volume=1.5,atempo=1.5"`
+## Contribution
 
-## Docker Usage
-
-### Build a Docker Image from the Dockerfile
-
-`docker build -t zotify .`
-
-### Create and Run a Container from the Docker Image
-
-`docker run -it --rm -p 4381:4381 -v "$PWD/Zotify Music:/root/Music/Zotify Music" -v "$PWD/Zotify Podcasts:/root/Music/Zotify Podcasts" zotify`
-
-## Podman Usage
-
-`podman run -it --rm --name zotify --network=host -v "$PWD/Zotify Music:/root/Music/Zotify Music" -v "$PWD/Zotify Podcasts:/root/Music/Zotify Podcasts" zotify`
-
-(Recommended Additional Configs: `--cap-drop=ALL --security-opt=no-new-privileges`)
-
-## Common Questions
-
-<details><summary>
-
-### What do I do if I see "Your session has been terminated"?
-
-</summary>
-
-If you see this, don't worry! Just try logging back in. If you see the incorrect username or token error, delete your `credentials.json` and you should be able to log back in.
-
-</details>
-
-<details><summary>
-
-### What do I do if I see repeated "Failed fetching audio key!" errors?
-
-</summary>
-
-If you see this, don't worry! Recent API changes have introduced rate limits, where requests for track info or audio streams may be rejected if too many requests are sent in a short time period. This can be mitigated by setting `DOWNLOAD_RATE_LIMITER > 0` and/or setting a nonzero `BULK_WAIT_TIME`. A recommended `BULK_WAIT_TIME` of `30` seconds has been shown to significantly minimize, if not completely negate, audio key request denials (see [this analysis by HxDxRx](https://github.com/zotify-dev/zotify/issues/186#issuecomment-2608381052))
-
-</details>
-
-<details><summary>
-
-### Will my account get banned if I use this tool?
-
-</summary>
-
-Only one user has ever reported an account getting suspended after using Zotify, and this only occurred after ***several days** of non-stop usage*.
-
-Zotify is recommended for use with a burner account, in reasonable batches of content, for reasonable periods of time.
-
-Ultimately, you use this program at your own risk.
-
-</details>
-
-## Disclaimer
-
-Zotify is intended to be used in compliance with DMCA, Section 1201, for educational, private, and fair use.
-
-Zotify contributors are not responsible for any misuse of this program or source code.
-
-Zotify is not associated with any external entities, organizations, companies, or services.
-
-## Contributing
-
-Please refer to [CONTRIBUTING](CONTRIBUTING.md)
+Voir [CONTRIBUTING.md](CONTRIBUTING.md).
