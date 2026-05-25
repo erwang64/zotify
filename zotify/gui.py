@@ -1588,6 +1588,11 @@ class ZotifyGUI(ctk.CTk):
             while True:
                 msg = self.output_queue.get_nowait()
                 if msg == "__ALL_DONE__":
+                    self.progress.stop()
+                    self.run_button.configure(state="normal")
+                    self.stop_button.configure(state="disabled")
+                    self.nav_auth_button.configure(state="normal")
+                    self.status_label.configure(text="Prêt", text_color="#9AA6B2")
                     self.show_page("Success")
                     self.current_action = "idle"
                     self.current_mode = ""
