@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Zotify Bridge",
+  "version": "1.0.0",
+  "description": "Ajoute un bouton 'Telecharger via Zotify' sur Spotify Web Player.",
+  "permissions": [],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://open.spotify.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Zotify Bridge",
+    "default_popup": "popup.html"
+  }
+}

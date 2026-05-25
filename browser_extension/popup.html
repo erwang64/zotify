@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Zotify Bridge</title>
+<style>
+    :root { color-scheme: dark; }
+    body {
+        margin: 0;
+        padding: 16px;
+        width: 280px;
+        background: #121212;
+        color: #fff;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    h1 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        color: #1DB954;
+    }
+    p { margin: 6px 0; color: #b3b3b3; }
+    .pill {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 11px;
+    }
+    .pill.ok  { background: #1DB954; color: #000; }
+    .pill.err { background: #E22134; color: #fff; }
+    code {
+        background: #222;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 12px;
+    }
+</style>
+</head>
+<body>
+    <h1>Zotify Bridge</h1>
+    <p>Statut serveur : <span id="status" class="pill err">verification...</span></p>
+    <p>Va sur une page <code>/track/</code>, <code>/album/</code> ou <code>/playlist/</code> de Spotify Web Player.</p>
+    <p>Un bouton vert "Telecharger via Zotify" apparait en bas a droite.</p>
+<script src="popup.js"></script>
+</body>
+</html>
