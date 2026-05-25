@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -525,19 +526,25 @@ class ZotifyGUI(ctk.CTk):
         self.current_cover_image = None
         self.cover_label.configure(image=None, text="Pas de pochette")
         
-        # Try to extract cover art from the last downloaded file
+        # Try to extract cover art from the last converted file (WAV/MP3)
         cover_source = None
         if self.last_downloaded_path and MUTAGEN_AVAILABLE:
-            # Try .ogg first (original before conversion), then .wav, then the path itself
-            for suffix in [".ogg", ".wav", ".mp3", self.last_downloaded_path.suffix]:
-                candidate = self.last_downloaded_path.with_suffix(suffix)
-                if candidate.exists() and candidate.suffix.lower() == ".ogg":
-                    cover_source = candidate
-                    break
+            # Try converted file first (WAV or MP3), then fall back to OGG if it exists
+            target_ext = self._conversion_ext()
+            converted = self.last_downloaded_path.with_suffix(target_ext)
+            if converted.exists():
+                cover_source = converted
+            else:
+                # Fallback: try to find the OGG file
+                for suffix in [".ogg", self.last_downloaded_path.suffix]:
+                    candidate = self.last_downloaded_path.with_suffix(suffix)
+                    if candidate.exists():
+                        cover_source = candidate
+                        break
         
         if cover_source:
             try:
-                pil_img = self._extract_cover_from_ogg(cover_source)
+                pil_img = self._extract_cover_from_audio(cover_source)
                 if pil_img is not None:
                     self.current_cover_image = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(150, 150))
                     self.cover_label.configure(image=self.current_cover_image, text="")
@@ -633,6 +640,59 @@ class ZotifyGUI(ctk.CTk):
                 image = _to_image(value)
                 if image is not None:
                     return image
+        return None
+
+    def _extract_cover_from_audio(self, audio_path: Path) -> Image.Image | None:
+        """Extract cover art from any audio format (OGG, MP3, WAV)."""
+        try:
+            suffix = audio_path.suffix.lower()
+            
+            # Try using music_tag first (works for all formats)
+            try:
+                import music_tag
+                audio = music_tag.load_file(str(audio_path))
+                if audio['artwork'].value:
+                    artwork_obj = audio['artwork'].value
+                    if hasattr(artwork_obj, 'data'):
+                        img = Image.open(BytesIO(artwork_obj.data))
+                        img.load()
+                        return img
+            except Exception:
+                pass
+            
+            # Fallback for OGG files
+            if suffix == ".ogg":
+                return self._extract_cover_from_ogg(audio_path)
+            
+            # Fallback for MP3 files using mutagen.id3
+            if suffix == ".mp3":
+                try:
+                    from mutagen.id3 import ID3
+                    id3 = ID3(str(audio_path))
+                    for frame in id3.getall('APIC'):
+                        if frame.data:
+                            img = Image.open(BytesIO(frame.data))
+                            img.load()
+                            return img
+                except Exception:
+                    pass
+            
+            # Fallback for WAV files
+            if suffix == ".wav":
+                try:
+                    from mutagen.wave import WAVE
+                    wave = WAVE(str(audio_path))
+                    for frame in wave.get('ID3', []):
+                        for apic_frame in frame.getall('APIC'):
+                            if apic_frame.data:
+                                img = Image.open(BytesIO(apic_frame.data))
+                                img.load()
+                                return img
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
         return None
 
     def show_page(self, page: str) -> None:
@@ -913,56 +973,133 @@ class ZotifyGUI(ctk.CTk):
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         def convert_one(src: Path) -> tuple[Path, bool, str]:
-            """Run ffmpeg for a single file. Returns (src, ok, error_excerpt).
+            """Convertit un fichier audio en MP3 320k CBR ou WAV 24-bit PCM.
 
-            Critical flags to avoid hangs in parallel subprocess scenarios:
-              -nostdin       : tells ffmpeg NEVER to read from stdin (otherwise
-                               4 parallel ffmpeg processes can deadlock on a
-                               shared/closed stdin on Windows).
-              -hide_banner   : trim verbose output.
-              -loglevel error: suppress info/warning chatter we never display.
-              stdin=DEVNULL  : extra safety so ffmpeg can't ever block on stdin.
-              stdout=DEVNULL : we don't need progress chatter from ffmpeg.
-              stderr=PIPE    : keep error tail for diagnosis if it fails.
-              timeout=10min  : prevents a single bad file from halting the batch.
+            Pipeline qualite maximale :
+              1. Lecture des tags + pochette du fichier source via mutagen.
+              2. Conversion ffmpeg en passant les metadonnees via -metadata
+                 et la pochette comme 2eme input (attached_pic). FFmpeg
+                 ecrit alors les chunks RIFF LIST/INFO (lus par
+                 l'Explorateur Windows) ET les frames ID3v2.
+              3. Finalisation mutagen : re-stamp ID3v2.3 UTF-8 + APIC
+                 garanti -> compatibilite maximale (Windows Explorer,
+                 WMP, foobar2000, MusicBee, iTunes...).
+
+            Flags critiques pour eviter les blocages en parallele :
+              -nostdin        : ffmpeg ne lit jamais stdin (sinon deadlock
+                                avec plusieurs ffmpeg en parallele sur Windows).
+              stdin=DEVNULL   : ceinture/bretelles.
+              stderr=PIPE     : on garde la fin du log si erreur.
+              timeout=10min   : empeche qu'un fichier bloque toute la batch.
             """
             dst = src.with_suffix(self._conversion_ext())
-            cmd = [
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-y", "-i", str(src), "-vn", *self._ffmpeg_encode_args(dst),
-            ]
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    timeout=ffmpeg_timeout_s,
-                    creationflags=creationflags,
-                )
-                if proc.returncode == 0:
-                    if src.suffix.lower() == ".ogg":
-                        try:
-                            src.unlink()
-                        except OSError:
-                            pass
-                    return (src, True, "")
-                tail = ""
-                if proc.stderr:
-                    tail = "\n".join(proc.stderr.strip().splitlines()[-3:])
-                return (src, False, tail)
-            except subprocess.TimeoutExpired:
-                # Clean up the half-written .wav so a retry later actually retries
+            is_mp3 = self._get_conversion_format() == "mp3"
+
+            src_tags = self._read_source_tags(src)
+            cover_bytes = self._extract_source_cover(src)
+
+            # La pochette n'est passee a ffmpeg que pour MP3 (le muxeur
+            # WAV de ffmpeg refuse les flux video et produirait un fichier
+            # corrompu). Pour WAV elle est integree post-conversion via
+            # mutagen dans le chunk ID3.
+            cover_tmp: Path | None = None
+            if cover_bytes and is_mp3:
+                cover_ext = ".png" if cover_bytes.startswith(b"\x89PNG") else ".jpg"
+                cover_tmp = dst.with_name(f"._zotify_cover_{os.getpid()}_{src.stem}{cover_ext}")
                 try:
-                    if dst.exists():
-                        dst.unlink()
+                    cover_tmp.write_bytes(cover_bytes)
                 except OSError:
-                    pass
-                return (src, False, f"Timeout apres {ffmpeg_timeout_s}s")
-            except OSError as exc:
-                return (src, False, f"Erreur ffmpeg: {exc}")
+                    cover_tmp = None
+
+            cmd: list[str] = [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-y", "-i", str(src),
+            ]
+            if cover_tmp is not None:
+                cmd += [
+                    "-i", str(cover_tmp),
+                    "-map", "0:a",
+                    "-map", "1:v",
+                    "-c:v", "copy",
+                    "-disposition:v", "attached_pic",
+                    "-metadata:s:v", "title=Album cover",
+                    "-metadata:s:v", "comment=Cover (front)",
+                ]
+            else:
+                cmd += ["-vn"]
+
+            metadata_map = {
+                "title":        src_tags.get("title"),
+                "artist":       src_tags.get("artist"),
+                "album":        src_tags.get("album"),
+                "album_artist": src_tags.get("albumartist"),
+                "date":         src_tags.get("date"),
+                "year":         src_tags.get("date"),
+                "track":        src_tags.get("track"),
+                "disc":         src_tags.get("disc"),
+                "genre":        src_tags.get("genre"),
+                "composer":     src_tags.get("composer"),
+                "compilation":  src_tags.get("compilation"),
+                "TRACKTOTAL":   src_tags.get("totaltracks"),
+                "DISCTOTAL":    src_tags.get("totaldiscs"),
+            }
+            for key, val in metadata_map.items():
+                if val:
+                    cmd += ["-metadata", f"{key}={val}"]
+            if src_tags.get("lyrics"):
+                cmd += ["-metadata", f"lyrics-eng={src_tags['lyrics']}"]
+
+            cmd += self._ffmpeg_encode_args()
+            cmd.append(str(dst))
+
+            try:
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                        timeout=ffmpeg_timeout_s,
+                        creationflags=creationflags,
+                    )
+                except subprocess.TimeoutExpired:
+                    try:
+                        if dst.exists():
+                            dst.unlink()
+                    except OSError:
+                        pass
+                    return (src, False, f"Timeout apres {ffmpeg_timeout_s}s")
+                except OSError as exc:
+                    return (src, False, f"Erreur ffmpeg: {exc}")
+
+                if proc.returncode != 0:
+                    tail = ""
+                    if proc.stderr:
+                        tail = "\n".join(proc.stderr.strip().splitlines()[-3:])
+                    return (src, False, tail)
+
+                try:
+                    self._finalize_tags(dst, src_tags, cover_bytes)
+                except Exception as meta_exc:
+                    self.output_queue.put(
+                        f"  [Avertissement] Echec finalisation tags pour {dst.name}: {meta_exc}\n"
+                    )
+
+                if src.suffix.lower() == ".ogg":
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+
+                return (src, True, "")
+            finally:
+                if cover_tmp is not None:
+                    try:
+                        cover_tmp.unlink()
+                    except OSError:
+                        pass
 
         def supervisor() -> None:
             converted = 0
@@ -1227,6 +1364,11 @@ class ZotifyGUI(ctk.CTk):
             args.extend(["--root-path", download_dir])
         if podcast_dir:
             args.extend(["--root-podcast-path", podcast_dir])
+            
+        # Desactive la generation des fichiers .lrc et des archives cache (.song_ids) localement
+        args.extend(["--lyrics-to-file", "False"])
+        args.extend(["--disable-directory-archives", "True"])
+        
         client_id = self.client_id_entry.get().strip()
         if client_id:
             args.extend(["--client-id", client_id])
@@ -1426,10 +1568,393 @@ class ZotifyGUI(ctk.CTk):
     def _conversion_label(self) -> str:
         return "MP3" if self._get_conversion_format() == "mp3" else "WAV"
 
-    def _ffmpeg_encode_args(self, dst: Path) -> list[str]:
+    def _ffmpeg_encode_args(self) -> list[str]:
+        """Arguments d'encodage haute qualite (sans chemin de sortie).
+
+        MP3 : LAME 320 kbps CBR + ``compression_level 0`` (algorithme
+              psycho-acoustique le plus precis / lent) + ID3v2.3 +
+              ID3v1 en complement pour compatibilite maximale.
+        WAV : PCM 24-bit little-endian, sans resampling (preserve
+              integralement le signal decode depuis l'OGG source).
+              On NE force PAS ``-rf64`` ni ``-write_id3v2`` : ffmpeg
+              ecrit alors un WAV RIFF standard avec chunks LIST/INFO
+              pour les metadonnees (lus par l'Explorateur Windows).
+              Les tags ID3v2.3 + APIC (pochette) sont ajoutes en
+              post-traitement par mutagen pour plus de robustesse.
+        """
         if self._get_conversion_format() == "mp3":
-            return ["-c:a", "libmp3lame", "-b:a", "320k", str(dst)]
-        return ["-c:a", "pcm_s16le", str(dst)]
+            return [
+                "-c:a", "libmp3lame",
+                "-b:a", "320k",
+                "-compression_level", "0",
+                "-id3v2_version", "3",
+                "-write_id3v1", "1",
+            ]
+        return [
+            "-c:a", "pcm_s24le",
+        ]
+
+    def _read_source_tags(self, src: Path) -> dict[str, str]:
+        """Lit les tags textuels du fichier source (OGG/MP3/M4A/FLAC/WAV).
+
+        Retourne un dict normalise (titre/artiste/album/...). Les valeurs
+        absentes sont omises pour eviter d'ecraser quoi que ce soit avec
+        une chaine vide cote ffmpeg/mutagen.
+        """
+        out: dict[str, str] = {}
+        try:
+            import music_tag  # already a Zotify dep
+            tags = music_tag.load_file(str(src))
+
+            def grab(key: str) -> str:
+                try:
+                    val = tags[key].value
+                except Exception:
+                    return ""
+                if val is None:
+                    return ""
+                if isinstance(val, (list, tuple)):
+                    val = val[0] if val else ""
+                return str(val).strip()
+
+            mapping = {
+                "title":        "tracktitle",
+                "artist":       "artist",
+                "album":        "album",
+                "albumartist":  "albumartist",
+                "date":         "year",
+                "track":        "tracknumber",
+                "disc":         "discnumber",
+                "totaltracks":  "totaltracks",
+                "totaldiscs":   "totaldiscs",
+                "genre":        "genre",
+                "composer":     "composer",
+                "compilation":  "compilation",
+                "lyrics":       "lyrics",
+            }
+            for out_key, mt_key in mapping.items():
+                val = grab(mt_key)
+                if val:
+                    out[out_key] = val
+        except Exception:
+            pass
+        return out
+
+    def _extract_source_cover(self, src: Path) -> bytes | None:
+        """Extrait la pochette embarquee dans le fichier source.
+
+        Supporte OGG (metadata_block_picture / coverart), MP3 (APIC),
+        M4A (covr), FLAC (pictures) et WAV (APIC dans ID3). Retourne
+        les octets bruts (JPEG ou PNG) ou ``None``.
+        """
+        suffix = src.suffix.lower()
+        try:
+            if suffix == ".ogg":
+                from mutagen.oggvorbis import OggVorbis
+                from mutagen.flac import Picture
+                audio = OggVorbis(str(src))
+                for b64data in audio.get("metadata_block_picture", []):
+                    try:
+                        return Picture(base64.b64decode(b64data)).data
+                    except Exception:
+                        continue
+                for b64data in audio.get("coverart", []):
+                    try:
+                        return base64.b64decode(b64data)
+                    except Exception:
+                        continue
+            elif suffix == ".mp3":
+                from mutagen.id3 import ID3, ID3NoHeaderError
+                try:
+                    id3 = ID3(str(src))
+                except ID3NoHeaderError:
+                    return None
+                for frame in id3.getall("APIC"):
+                    if frame.data:
+                        return frame.data
+            elif suffix == ".m4a":
+                from mutagen.mp4 import MP4
+                mp4 = MP4(str(src))
+                covers = mp4.tags.get("covr", []) if mp4.tags else []
+                if covers:
+                    return bytes(covers[0])
+            elif suffix == ".flac":
+                from mutagen.flac import FLAC
+                flac = FLAC(str(src))
+                if flac.pictures:
+                    return flac.pictures[0].data
+            elif suffix == ".wav":
+                from mutagen.wave import WAVE
+                wav = WAVE(str(src))
+                if wav.tags is not None:
+                    try:
+                        frames = wav.tags.getall("APIC")
+                    except Exception:
+                        frames = []
+                    for frame in frames:
+                        if frame.data:
+                            return frame.data
+        except Exception:
+            pass
+        return None
+
+    def _finalize_tags(
+        self,
+        dst: Path,
+        src_tags: dict[str, str],
+        cover_bytes: bytes | None,
+    ) -> None:
+        """Re-stamp robuste des tags ID3v2.3 + pochette via mutagen.
+
+        ffmpeg ecrit deja la majorite des metadonnees lors de la
+        conversion (LIST/INFO pour WAV + ID3 pour MP3/WAV), mais
+        certaines frames (TPE2 album_artist, TPOS, USLT) et surtout
+        l'APIC (pochette) ne sont pas toujours preservees correctement.
+        On force ici l'etat final en ID3v2.3 UTF-8, format universel.
+        """
+        suffix = dst.suffix.lower()
+        if suffix not in (".mp3", ".wav"):
+            return
+
+        from mutagen.id3 import (
+            ID3, ID3NoHeaderError,
+            TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TCON, TDRC, TYER,
+            TCOM, TCMP, USLT, APIC,
+        )
+
+        wav = None
+        if suffix == ".mp3":
+            try:
+                id3 = ID3(str(dst))
+            except ID3NoHeaderError:
+                id3 = ID3()
+        else:
+            from mutagen.wave import WAVE
+            wav = WAVE(str(dst))
+            if wav.tags is None:
+                wav.add_tags()
+            id3 = wav.tags
+
+        def set_frame(frame_cls, value):
+            if not value:
+                return
+            try:
+                id3.delall(frame_cls.__name__)
+            except Exception:
+                pass
+            try:
+                id3.add(frame_cls(encoding=3, text=[str(value)]))
+            except Exception:
+                pass
+
+        set_frame(TIT2, src_tags.get("title"))
+        set_frame(TPE1, src_tags.get("artist"))
+        set_frame(TPE2, src_tags.get("albumartist"))
+        set_frame(TALB, src_tags.get("album"))
+        set_frame(TCON, src_tags.get("genre"))
+        set_frame(TCOM, src_tags.get("composer"))
+
+        date_val = src_tags.get("date")
+        if date_val:
+            set_frame(TDRC, date_val)
+            year_str = date_val[:4] if len(date_val) >= 4 else date_val
+            set_frame(TYER, year_str)
+
+        track_val = src_tags.get("track")
+        if track_val:
+            trck = f"{track_val}/{src_tags['totaltracks']}" if src_tags.get("totaltracks") else track_val
+            try:
+                id3.delall("TRCK")
+                id3.add(TRCK(encoding=3, text=[trck]))
+            except Exception:
+                pass
+
+        disc_val = src_tags.get("disc")
+        if disc_val:
+            tpos = f"{disc_val}/{src_tags['totaldiscs']}" if src_tags.get("totaldiscs") else disc_val
+            try:
+                id3.delall("TPOS")
+                id3.add(TPOS(encoding=3, text=[tpos]))
+            except Exception:
+                pass
+
+        comp_val = src_tags.get("compilation")
+        if comp_val:
+            try:
+                id3.delall("TCMP")
+                truthy = str(comp_val).strip().lower() in ("1", "true", "yes", "y")
+                id3.add(TCMP(encoding=3, text=["1" if truthy else "0"]))
+            except Exception:
+                pass
+
+        lyrics_val = src_tags.get("lyrics")
+        if lyrics_val:
+            try:
+                id3.delall("USLT")
+                id3.add(USLT(encoding=3, lang="eng", desc="", text=lyrics_val))
+            except Exception:
+                pass
+
+        if cover_bytes:
+            mime = "image/png" if cover_bytes.startswith(b"\x89PNG") else "image/jpeg"
+            try:
+                id3.delall("APIC")
+                id3.add(APIC(
+                    encoding=3,
+                    mime=mime,
+                    type=3,  # cover (front)
+                    desc="Cover",
+                    data=cover_bytes,
+                ))
+            except Exception:
+                pass
+
+        # Force ID3v2.3 strict (UTF-16 au lieu de UTF-8, mono-valeur par
+        # frame texte). Recommande par la doc mutagen pour la
+        # compatibilite maximale avec les lecteurs anciens & Windows.
+        try:
+            id3.update_to_v23()
+        except Exception:
+            pass
+
+        if suffix == ".mp3":
+            id3.save(str(dst), v2_version=3)
+        else:
+            try:
+                wav.save(v2_version=3)
+            except TypeError:
+                wav.save()
+            # Reorganise les chunks pour maximum compatibilite :
+            #   1. Ajoute un chunk RIFF LIST/INFO frais (lu par
+            #      foobar2000, MusicBee, VLC, WMP via Media Foundation).
+            #   2. Repositionne le chunk 'id3 ' ECRIT par mutagen pour
+            #      qu'il soit AVANT le chunk 'data' (certains lecteurs
+            #      ne scannent pas la zone post-data).
+            try:
+                self._write_wav_info_chunk(dst, src_tags)
+            except Exception:
+                pass
+
+    def _write_wav_info_chunk(self, dst: Path, src_tags: dict[str, str]) -> None:
+        """Insere/remplace le chunk RIFF ``LIST/INFO`` dans un WAV.
+
+        Format officiel RIFF pour les metadonnees WAV, lu par :
+          - l'Explorateur Windows (colonnes Titre/Artiste/Album/N°)
+          - Windows Media Player / Lecteur multimedia
+          - foobar2000, MusicBee, VLC, etc.
+
+        On strippe tout LIST/INFO existant puis on en ecrit un frais
+        juste avant le chunk ``data`` pour compatibilite maximale
+        (certains lecteurs ne scannent pas la zone post-data).
+        """
+        info_map = {
+            "INAM": src_tags.get("title"),         # nom du morceau
+            "IART": src_tags.get("artist"),        # artiste principal
+            "IPRD": src_tags.get("album"),         # produit / album
+            "ICRD": src_tags.get("date"),          # date de creation / annee
+            "IGNR": src_tags.get("genre"),         # genre
+            "ITRK": src_tags.get("track"),         # numero de piste
+            "IENG": src_tags.get("albumartist"),   # ingenieur => artiste de l'album
+            "IMUS": src_tags.get("composer"),      # compositeur
+            "ISFT": "Zotify GUI",                  # logiciel ayant cree le fichier
+            "ICMT": src_tags.get("lyrics"),        # commentaire (parfois lyrics)
+        }
+
+        info_payload = b"INFO"
+        for code, val in info_map.items():
+            if not val:
+                continue
+            # RIFF INFO sub-chunks : data = chaine NULL-terminee.
+            # ATTENTION spec : le champ size compte la donnee SANS le pad
+            # d'alignement (1 octet ajoute si la donnee a une taille
+            # impaire pour aligner le chunk suivant sur 2 octets).
+            # Reporter une size incluant le pad rend le chunk illisible
+            # pour le Property Handler WAV de Windows.
+            encoded = str(val).encode("utf-8", errors="replace") + b"\x00"
+            size = len(encoded)
+            payload = encoded if size % 2 == 0 else encoded + b"\x00"
+            info_payload += code.encode("ascii") + struct.pack("<I", size) + payload
+
+        if info_payload == b"INFO":
+            return
+
+        # Le size du LIST chunk = taille totale de info_payload (qui
+        # inclut deja le mot "INFO" et tous les sous-chunks alignes).
+        list_chunk = b"LIST" + struct.pack("<I", len(info_payload)) + info_payload
+        if len(list_chunk) % 2:
+            list_chunk += b"\x00"
+
+        try:
+            data = dst.read_bytes()
+        except OSError:
+            return
+
+        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            return
+
+        # Parse tous les chunks. On capture separement le chunk
+        # 'data' (audio brut) et le chunk 'id3 ' (ecrit par mutagen)
+        # pour pouvoir les reordonner. Les autres chunks (fmt, fact,
+        # bext, etc.) conservent leur ordre original.
+        chunks_before: list[bytes] = []
+        chunks_after: list[bytes] = []
+        data_chunk: bytes | None = None
+        id3_chunk: bytes | None = None
+        seen_data = False
+        pos = 12
+        while pos + 8 <= len(data):
+            cid = data[pos:pos + 4]
+            csize = struct.unpack("<I", data[pos + 4:pos + 8])[0]
+            chunk_end = pos + 8 + csize + (csize & 1)
+            if chunk_end > len(data):
+                chunk_end = len(data)
+            chunk_bytes = data[pos:chunk_end]
+            # Saute toute LIST/INFO existante (on en ecrit une fraiche)
+            if cid == b"LIST" and pos + 12 <= len(data) and data[pos + 8:pos + 12] == b"INFO":
+                pos = chunk_end
+                continue
+            # Capture le chunk audio
+            if cid == b"data":
+                data_chunk = chunk_bytes
+                seen_data = True
+                pos = chunk_end
+                continue
+            # Capture le chunk id3 (peu importe sa position) pour
+            # le repositionner AVANT data
+            if cid in (b"id3 ", b"ID3 "):
+                id3_chunk = chunk_bytes
+                pos = chunk_end
+                continue
+            # Autres chunks : on conserve la position relative a data
+            if seen_data:
+                chunks_after.append(chunk_bytes)
+            else:
+                chunks_before.append(chunk_bytes)
+            pos = chunk_end
+
+        if data_chunk is None:
+            # Fichier malforme : on ne touche pas pour ne pas l'aggraver
+            return
+
+        # Reassemble dans l'ordre cible :
+        # RIFF header / fmt + autres pre-data / LIST INFO / id3 / data / chunks post-data
+        out = bytearray(data[:12])
+        for c in chunks_before:
+            out += c
+        out += list_chunk
+        if id3_chunk is not None:
+            out += id3_chunk
+        out += data_chunk
+        for c in chunks_after:
+            out += c
+
+        new_size = len(out) - 8
+        out[4:8] = struct.pack("<I", new_size)
+
+        try:
+            dst.write_bytes(bytes(out))
+        except OSError:
+            pass
 
     def save_settings(self) -> None:
         conv_fmt = self.conversion_format_var.get().strip().lower()
