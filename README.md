@@ -1,4 +1,4 @@
-# Zotify — GUI 1.2.0
+# Zotify — GUI 1.2.1
 
 <p align="center">
   <img src="https://i.imgur.com/hGXQWSl.png" width="40%" alt="Zotify logo">
@@ -9,13 +9,13 @@ Cette version met l’accent sur une **interface graphique moderne**, une **conv
 
 | Version GUI | Extension navigateur | Pont local |
 |-------------|-------------------|------------|
-| **1.2.0**   | Zotify Bridge 1.2.0 | `127.0.0.1:43219` |
+| **1.2.1**   | Zotify Bridge 1.2.1 | `127.0.0.1:43219` |
 
 Voir le détail des changements dans [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Fonctionnalités (1.2.0)
+## Fonctionnalités (1.2.1)
 
 - Interface graphique sombre (CustomTkinter) avec console en direct
 - Téléchargement depuis une **URL**, une **recherche**, les **favoris**, **playlists**, **albums**, **artistes**
@@ -71,7 +71,7 @@ ou :
 python -m zotify --gui
 ```
 
-Au démarrage, le GUI affiche **v1.2.0** en bas de la barre latérale et démarre automatiquement le **serveur pont** sur `http://127.0.0.1:43219` (nécessaire pour les extensions).
+Au démarrage, le GUI affiche **v1.2.1** en bas de la barre latérale et démarre automatiquement le **serveur pont** sur `http://127.0.0.1:43219` (nécessaire pour les extensions).
 
 > **Important** : garde le GUI ouvert pendant que tu utilises l’extension navigateur ou Spicetify.
 
@@ -206,7 +206,7 @@ CHANGELOG.md            # Journal des versions GUI
 
 ## Changelog
 
-Voir **[CHANGELOG.md](CHANGELOG.md)** pour l’historique complet (1.2.0, 1.1.0, …).
+Voir **[CHANGELOG.md](CHANGELOG.md)** pour l’historique complet (1.2.1, 1.1.0, …).
 
 ---
 

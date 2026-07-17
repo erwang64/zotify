@@ -1,4 +1,4 @@
-# Zotify Bridge — Extension navigateur (v1.2.0)
+# Zotify Bridge — Extension navigateur (v1.2.1)
 
 Ajoute un bouton **« Télécharger via Zotify »** sur [Spotify Web Player](https://open.spotify.com).  
 L’URL de la page courante (track, album ou playlist) est envoyée au **GUI Zotify** via un serveur HTTP local.
