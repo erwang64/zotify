@@ -62,7 +62,7 @@ if (-not (Test-Path $distExe)) {
     throw "Build failed. Missing executable: $distExe"
 }
 
-# Dossier de release versionne : dist/Zotify-1.2.0/
+# Dossier de release versionne : dist/Zotify-1.2.1/
 $releaseDir = Join-Path $repoRoot "dist\Zotify-$version"
 if (Test-Path $releaseDir) {
     Remove-Item $releaseDir -Recurse -Force

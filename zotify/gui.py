@@ -33,7 +33,7 @@ from tkinter import filedialog, Menu
 
 WINDOW_WIDTH: Final[int] = 1024
 WINDOW_HEIGHT: Final[int] = 700
-GUI_VERSION: Final[str] = "1.2.0"
+GUI_VERSION: Final[str] = "1.2.1"
 # Nombre max de telechargements lances en parallele. Au-dela, les
 # demandes supplementaires sont mises en file et demarrees au fur
 # et a mesure que les workers se liberent. 3 est un bon compromis
